@@ -8,10 +8,10 @@ function nextInvoiceNumber(lastId: number | null): string {
 
 export async function POST(
   _req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const rawId = params.id; // may be "1" or "RP-0001" etc.
+    const { id: rawId } = await context.params; // ✅ Next.js 16 expects Promise params
 
     // Try numeric first, fall back to invoice_number
     const numericId = Number(rawId);
@@ -97,9 +97,11 @@ export async function POST(
         ...it,
         invoice_id: newId,
       }));
+
       const { error: insItemsErr } = await supabase
         .from("invoice_items")
         .insert(clonedItems);
+
       if (insItemsErr) throw insItemsErr;
     }
 

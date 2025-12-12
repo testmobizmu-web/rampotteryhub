@@ -1231,3 +1231,74 @@ html, body {
   }
 }
 
+/* ===== Login (premium) ===== */
+.rp-login-wrap{
+  min-height: 100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:24px;
+  background: radial-gradient(1200px 700px at 20% 10%, rgba(185,28,28,.18), transparent 60%),
+              radial-gradient(900px 600px at 90% 20%, rgba(239,68,68,.12), transparent 60%),
+              #0b0f17;
+}
+
+.rp-login-card{
+  width: min(460px, 92vw);
+  border-radius: 22px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.10);
+  backdrop-filter: blur(10px);
+  padding: 22px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.45);
+}
+
+.rp-login-title{
+  margin:0;
+  font-size: 24px;
+  letter-spacing: .2px;
+  color: #fff;
+}
+
+.rp-login-sub{
+  margin: 6px 0 16px;
+  color: rgba(255,255,255,.72);
+  font-size: 13px;
+}
+
+.rp-login-form{
+  display:flex;
+  flex-direction:column;
+  gap: 12px;
+}
+
+.rp-field span{
+  display:block;
+  font-size: 12px;
+  margin-bottom: 6px;
+  color: rgba(255,255,255,.75);
+}
+
+.rp-field input{
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.06);
+  color: #fff;
+  outline: none;
+}
+
+.rp-field input:focus{
+  border-color: rgba(239,68,68,.55);
+  box-shadow: 0 0 0 4px rgba(239,68,68,.18);
+}
+
+.rp-login-error{
+  font-size: 12px;
+  color: #fecaca;
+  background: rgba(185,28,28,.18);
+  border: 1px solid rgba(185,28,28,.35);
+  padding: 10px 12px;
+  border-radius: 14px;
+}

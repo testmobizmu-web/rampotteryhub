@@ -1,104 +1,45 @@
 // app/api/users/route.ts
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
-function getSession() {
-  const raw = cookies().get("rp_session")?.value;
+function getSession(req: NextRequest) {
+  const raw = req.cookies.get("rp_session")?.value;
   if (!raw) return null;
+
   try {
-    return JSON.parse(raw) as { userId: number; username: string; role: string };
+    return JSON.parse(raw) as {
+      userId: number;
+      username: string;
+      role: string;
+      permissions?: Record<string, boolean>;
+    };
   } catch {
     return null;
   }
 }
 
-function ensureAdmin() {
-  const session = getSession();
-  if (!session) {
-    return { ok: false, status: 401, error: "Not authenticated." };
-  }
-  if (session.role !== "admin") {
-    return { ok: false, status: 403, error: "Admin access required." };
-  }
-  return { ok: true, session };
-}
+export async function GET(req: NextRequest) {
+  const session = getSession(req);
 
-export async function GET() {
-  const check = ensureAdmin();
-  if (!check.ok) {
+  if (!session || session.role !== "admin") {
     return NextResponse.json(
-      { ok: false, error: check.error },
-      { status: check.status }
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
     );
   }
 
   const { data, error } = await supabase
     .from("rp_users")
-    .select("id, username, role, permissions, is_active, created_at")
-    .order("created_at", { ascending: true });
+    .select("id, username, role, permissions, is_active")
+    .order("username");
 
   if (error) {
-    console.error(error);
     return NextResponse.json(
-      { ok: false, error: "Failed to load users." },
+      { ok: false, error: error.message },
       { status: 500 }
     );
   }
 
-  return NextResponse.json({ ok: true, users: data });
+  return NextResponse.json({ ok: true, users: data || [] });
 }
 
-export async function POST(req: Request) {
-  const check = ensureAdmin();
-  if (!check.ok) {
-    return NextResponse.json(
-      { ok: false, error: check.error },
-      { status: check.status }
-    );
-  }
-
-  const body = await req.json();
-  const {
-    username,
-    password,
-    role = "staff",
-    permissions = {},
-  } = body as {
-    username?: string;
-    password?: string;
-    role?: string;
-    permissions?: Record<string, boolean>;
-  };
-
-  if (!username || !password) {
-    return NextResponse.json(
-      { ok: false, error: "Username and password are required." },
-      { status: 400 }
-    );
-  }
-
-  const { error } = await supabase.from("rp_users").insert({
-    username,
-    password,
-    role,
-    permissions,
-    is_active: true,
-  });
-
-  if (error) {
-    console.error(error);
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          error.code === "23505"
-            ? "Username already exists."
-            : "Failed to create user.",
-      },
-      { status: 400 }
-    );
-  }
-
-  return NextResponse.json({ ok: true });
-}

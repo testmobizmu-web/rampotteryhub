@@ -1,27 +1,20 @@
 // app/api/session/route.ts
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const raw = cookies().get("rp_session")?.value;
+    const raw = req.cookies.get("rp_session")?.value;
+
     if (!raw) {
       return NextResponse.json({ ok: false }, { status: 401 });
     }
 
-    let session;
-    try {
-      session = JSON.parse(raw);
-    } catch {
-      return NextResponse.json({ ok: false }, { status: 401 });
-    }
-
+    const session = JSON.parse(raw);
     return NextResponse.json({ ok: true, session });
-  } catch (err) {
-    console.error(err);
+  } catch (err: any) {
     return NextResponse.json(
-      { ok: false, error: "Unable to load session." },
-      { status: 500 }
+      { ok: false, error: err?.message || "Invalid session" },
+      { status: 401 }
     );
   }
 }

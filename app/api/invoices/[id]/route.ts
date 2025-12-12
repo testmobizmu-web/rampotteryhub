@@ -1,23 +1,19 @@
-// app/api/invoices/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
-type RouteContext = {
-  params: { id: string };
-};
-
-export async function GET(_req: NextRequest, context: RouteContext) {
+export async function GET(
+  _req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
-    const id = Number(context.params.id);
-    if (!id || Number.isNaN(id)) {
-      return NextResponse.json(
-        { error: "Invalid invoice id" },
-        { status: 400 }
-      );
-    }
+    // ✅ REQUIRED in Next 16
+    const { id } = await context.params;
 
-    // --- load invoice + customer ---
-    const { data: invoice, error: invError } = await supabase
+    const numericId = Number(id);
+    const useNumeric = !Number.isNaN(numericId);
+
+    // 1) Load invoice
+    const { data: invoice, error: invErr } = await supabase
       .from("invoices")
       .select(
         `
@@ -38,7 +34,6 @@ export async function GET(_req: NextRequest, context: RouteContext) {
         balance_remaining,
         status,
         customers (
-          id,
           name,
           address,
           phone,
@@ -48,43 +43,26 @@ export async function GET(_req: NextRequest, context: RouteContext) {
         )
       `
       )
-      .eq("id", id)
+      .eq(useNumeric ? "id" : "invoice_number", useNumeric ? numericId : id)
       .single();
 
-    if (invError || !invoice) {
-      console.error("Invoice load error:", invError);
+    if (invErr || !invoice) {
       return NextResponse.json(
-        { error: invError?.message || "Invoice not found" },
+        { error: "Invoice not found" },
         { status: 404 }
       );
     }
 
-    // --- load items + product info ---
-    const { data: items, error: itemsError } = await supabase
+    // 2) Load items
+    const { data: items, error: itemsErr } = await supabase
       .from("invoice_items")
-      .select(
-        `
-        id,
-        product_id,
-        box_qty,
-        units_per_box,
-        total_qty,
-        unit_price_excl_vat,
-        unit_vat,
-        products (
-          id,
-          item_code,
-          name
-        )
-      `
-      )
-      .eq("invoice_id", id)
+      .select("*")
+      .eq("invoice_id", invoice.id)
       .order("id", { ascending: true });
 
-    if (itemsError) {
-      console.error("Invoice items load error:", itemsError);
+    if (itemsErr) {
       return NextResponse.json(
-        { error: itemsError.message || "Failed to load invoice items" },
+        { error: itemsErr.message },
         { status: 500 }
       );
     }
@@ -94,9 +72,9 @@ export async function GET(_req: NextRequest, context: RouteContext) {
       items: items || [],
     });
   } catch (err: any) {
-    console.error("Unexpected invoice load error:", err);
+    console.error(err);
     return NextResponse.json(
-      { error: err?.message || "Unexpected error loading invoice" },
+      { error: err?.message || "Server error" },
       { status: 500 }
     );
   }

@@ -1,9 +1,8 @@
 // app/api/login/route.ts
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
 
@@ -63,15 +62,17 @@ export async function POST(req: Request) {
       permissions: data.permissions || {},
     };
 
-    // Save session cookie for 8 hours
-    cookies().set("rp_session", JSON.stringify(session), {
+    // ✅ Next.js 16: set cookie on the RESPONSE (not cookies().set)
+    const res = NextResponse.json({ ok: true, session });
+    res.cookies.set("rp_session", JSON.stringify(session), {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60 * 8,
+      maxAge: 60 * 60 * 8, // 8 hours
+      secure: process.env.NODE_ENV === "production",
     });
 
-    return NextResponse.json({ ok: true, session });
+    return res;
   } catch (err) {
     console.error("Login unexpected error:", err);
     return NextResponse.json(
@@ -81,16 +82,16 @@ export async function POST(req: Request) {
   }
 }
 
-export async function GET() {
-  // Optional small helper to check if logged in
+export async function GET(req: NextRequest) {
+  // ✅ Next.js 16: read cookie from req.cookies
   try {
-    const raw = cookies().get("rp_session")?.value;
-    if (!raw) {
-      return NextResponse.json({ ok: false }, { status: 401 });
-    }
+    const raw = req.cookies.get("rp_session")?.value;
+    if (!raw) return NextResponse.json({ ok: false }, { status: 401 });
+
     const session = JSON.parse(raw);
     return NextResponse.json({ ok: true, session });
   } catch {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
 }
+
