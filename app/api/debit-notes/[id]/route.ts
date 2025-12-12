@@ -8,10 +8,10 @@ export async function GET(
   try {
     const { id } = await context.params;
 
-    // 1) Load credit note
+    // 1) Load debit note
     const { data: note, error: noteErr } = await supabase
       .from("rp_debit_notes")
-      .select
+      .select(
         `
         id,
         note_number,
@@ -39,7 +39,7 @@ export async function GET(
       );
     }
 
-    // 2) Load items (if you have items table)
+    // 2) Load items
     const { data: items, error: itemsErr } = await supabase
       .from("rp_debit_note_items")
       .select("*")
@@ -61,4 +61,3 @@ export async function GET(
     );
   }
 }
-
