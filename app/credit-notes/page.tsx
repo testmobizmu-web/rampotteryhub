@@ -1,4 +1,3 @@
-// app/credit-notes/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -11,7 +10,7 @@ type CreditNoteRow = {
   credit_note_date: string | null;
   status: string | null;
   total_amount: number | null;
-  customers: { name: string | null; customer_code: string | null }[]; // Supabase often returns array
+  customers: { name: string | null; customer_code: string | null }[]; // ✅ normalized array
 };
 
 function formatDateGb(d: string | null) {
@@ -33,7 +32,6 @@ function statusBadgeClass(status: string | null) {
 
 function csvEscape(value: any) {
   const s = String(value ?? "");
-  // Escape double quotes and wrap in quotes if needed
   const needs = /[",\n\r]/.test(s);
   const escaped = s.replace(/"/g, '""');
   return needs ? `"${escaped}"` : escaped;
@@ -78,7 +76,8 @@ export default function CreditNotesPage() {
         customers ( name, customer_code )
       `
       )
-      .order("credit_note_date", { ascending: false });
+      .order("credit_note_date", { ascending: false })
+      .order("id", { ascending: false });
 
     if (error) {
       alert(error.message);
@@ -119,6 +118,7 @@ export default function CreditNotesPage() {
       const customerCode = (c?.customer_code || "").toLowerCase();
       const cnNo = (r.credit_note_number || "").toLowerCase();
       const st = (r.status || "").toLowerCase();
+
       return (
         customerName.includes(s) ||
         customerCode.includes(s) ||
@@ -152,12 +152,11 @@ export default function CreditNotesPage() {
 
   return (
     <div>
-      {/* Local badge styles */}
+      {/* Badge styles */}
       <style jsx global>{`
         .rp-badge {
           display: inline-flex;
           align-items: center;
-          gap: 6px;
           padding: 5px 10px;
           border-radius: 999px;
           font-size: 11px;
@@ -189,7 +188,11 @@ export default function CreditNotesPage() {
       `}</style>
 
       <div className="flex items-center justify-between mb-3">
-        <h1 className="text-lg font-semibold">Credit Notes</h1>
+        <div>
+          <h1 className="text-lg font-semibold">Credit Notes</h1>
+          <div className="text-xs opacity-70">Premium listing • same style as invoices</div>
+        </div>
+
         <div className="flex gap-2">
           <button className="btn btn-ghost" onClick={handleExportCsv} disabled={loading}>
             Export CSV
@@ -245,8 +248,6 @@ export default function CreditNotesPage() {
                 ? `${c.customer_code ? c.customer_code + " — " : ""}${c.name || ""}`
                 : "—";
 
-              const st = String(r.status || "—").toUpperCase();
-
               return (
                 <tr key={r.id}>
                   <td>{r.credit_note_number || `#${r.id}`}</td>
@@ -254,7 +255,9 @@ export default function CreditNotesPage() {
                   <td>{customerLabel}</td>
                   <td>{Number(r.total_amount || 0).toFixed(2)}</td>
                   <td>
-                    <span className={statusBadgeClass(r.status)}>{st}</span>
+                    <span className={statusBadgeClass(r.status)}>
+                      {String(r.status || "—").toUpperCase()}
+                    </span>
                   </td>
                   <td>
                     <Link href={`/credit-notes/${r.id}`} className="btn btn-ghost">
@@ -276,5 +279,3 @@ export default function CreditNotesPage() {
     </div>
   );
 }
-
-

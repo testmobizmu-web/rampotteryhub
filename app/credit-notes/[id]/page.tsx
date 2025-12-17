@@ -1,4 +1,3 @@
-// app/credit-notes/[id]/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -70,14 +69,19 @@ export default function CreditNoteViewPage() {
   }, [params.id]);
 
   if (loading) return <div style={{ padding: 20 }}>Loading…</div>;
-  if (error || !creditNote) return <div style={{ padding: 20, color: "#b91c1c" }}>{error || "Not found"}</div>;
+  if (error || !creditNote)
+    return <div style={{ padding: 20, color: "#b91c1c" }}>{error || "Not found"}</div>;
 
   const c = creditNote.customers;
-  const dateFmt = creditNote.credit_note_date ? new Date(creditNote.credit_note_date).toLocaleDateString("en-GB") : "";
+  const dateFmt = creditNote.credit_note_date
+    ? new Date(creditNote.credit_note_date).toLocaleDateString("en-GB")
+    : "";
 
   const subtotal = Number(creditNote.subtotal || 0);
   const vat = Number(creditNote.vat_amount || 0);
   const total = Number(creditNote.total_amount || 0);
+
+  const statusUpper = String(creditNote.status || "ISSUED").toUpperCase();
 
   return (
     <div className="rp-app rp-invoice-page">
@@ -115,8 +119,8 @@ export default function CreditNoteViewPage() {
 
             <div className="rp-invoice-title-row">
               <div className="rp-invoice-title">CREDIT NOTE</div>
-              <div style={{ marginTop: 8, fontSize: 12, fontWeight: 800, opacity: 0.75 }}>
-                STATUS: {String(creditNote.status || "ISSUED").toUpperCase()}
+              <div style={{ marginTop: 8, fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
+                STATUS: {statusUpper}
               </div>
             </div>
           </header>
@@ -135,7 +139,7 @@ export default function CreditNoteViewPage() {
               </div>
 
               <div className="rp-invoice-field-row">
-                <label>Customer:</label>
+                <label>Name:</label>
                 <input disabled value={c?.name || ""} className="rp-input-plain" />
               </div>
 
@@ -224,7 +228,7 @@ export default function CreditNoteViewPage() {
 
             <div className="rp-invoice-totals">
               <div className="rp-invoice-field-row">
-                <label>SUBTOTAL</label>
+                <label>SUB TOTAL</label>
                 <input disabled value={subtotal.toFixed(2)} className="rp-input-plain" />
               </div>
               <div className="rp-invoice-field-row">
@@ -232,17 +236,16 @@ export default function CreditNoteViewPage() {
                 <input disabled value={vat.toFixed(2)} className="rp-input-plain" />
               </div>
               <div className="rp-invoice-field-row">
-                <label>TOTAL</label>
+                <label>TOTAL AMOUNT</label>
                 <input disabled value={total.toFixed(2)} className="rp-input-plain" />
               </div>
             </div>
           </section>
 
-          <div className="rp-invoice-footer-bar">
-            We thank you for your business.
-          </div>
+          <div className="rp-invoice-footer-bar">We thank you for your business.</div>
         </div>
       </main>
     </div>
   );
 }
+

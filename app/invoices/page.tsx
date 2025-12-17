@@ -1,4 +1,3 @@
-// app/invoices/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -10,11 +9,10 @@ type InvoiceRow = {
   invoice_number: string | null;
   invoice_date: string | null;
   status: string | null;
-  gross_total: number | null;
   total_amount: number | null;
   balance_remaining: number | null;
   amount_paid: number | null;
-  customers: { name: string | null; customer_code: string | null }[]; // ✅ array
+  customers: { name: string | null; customer_code: string | null }[]; // ✅ normalized array
 };
 
 function formatDateGb(d: string | null) {
@@ -42,6 +40,7 @@ export default function InvoicesPage() {
   const load = async () => {
     setLoading(true);
 
+    // ✅ IMPORTANT: gross_total REMOVED (column doesn't exist)
     const { data, error } = await supabase
       .from("invoices")
       .select(
@@ -50,7 +49,6 @@ export default function InvoicesPage() {
         invoice_number,
         invoice_date,
         status,
-        gross_total,
         total_amount,
         balance_remaining,
         amount_paid,
@@ -73,7 +71,6 @@ export default function InvoicesPage() {
         invoice_number: r.invoice_number ?? null,
         invoice_date: r.invoice_date ?? null,
         status: r.status ?? null,
-        gross_total: r.gross_total ?? null,
         total_amount: r.total_amount ?? null,
         balance_remaining: r.balance_remaining ?? null,
         amount_paid: r.amount_paid ?? null,
@@ -119,7 +116,6 @@ export default function InvoicesPage() {
         .rp-badge {
           display: inline-flex;
           align-items: center;
-          gap: 6px;
           padding: 5px 10px;
           border-radius: 999px;
           font-size: 11px;
@@ -151,7 +147,11 @@ export default function InvoicesPage() {
       `}</style>
 
       <div className="flex items-center justify-between mb-3">
-        <h1 className="text-lg font-semibold">Invoices</h1>
+        <div>
+          <h1 className="text-lg font-semibold">Invoices</h1>
+          <div className="text-xs opacity-70">Reprint / view invoices • premium listing</div>
+        </div>
+
         <div className="flex gap-2">
           <Link href="/invoices/new" className="btn btn-primary">
             + New Invoice
@@ -191,7 +191,7 @@ export default function InvoicesPage() {
               <th>Invoice No</th>
               <th>Date</th>
               <th>Customer</th>
-              <th>Gross Total (Rs)</th>
+              <th>Total (Rs)</th>
               <th>Paid (Rs)</th>
               <th>Balance (Rs)</th>
               <th>Status</th>
@@ -206,16 +206,19 @@ export default function InvoicesPage() {
                 ? `${c.customer_code ? c.customer_code + " — " : ""}${c.name || ""}`
                 : "—";
 
-              const gross = Number(r.gross_total ?? r.total_amount ?? 0);
+              const total = Number(r.total_amount ?? 0);
               const paid = Number(r.amount_paid ?? 0);
-              const bal = Number(r.balance_remaining ?? Math.max(0, gross - paid));
+              const bal =
+                r.balance_remaining != null
+                  ? Number(r.balance_remaining)
+                  : Math.max(0, total - paid);
 
               return (
                 <tr key={r.id}>
                   <td>{r.invoice_number || `#${r.id}`}</td>
                   <td>{formatDateGb(r.invoice_date)}</td>
                   <td>{customerLabel}</td>
-                  <td>{gross.toFixed(2)}</td>
+                  <td>{total.toFixed(2)}</td>
                   <td>{paid.toFixed(2)}</td>
                   <td>{bal.toFixed(2)}</td>
                   <td>
@@ -243,4 +246,3 @@ export default function InvoicesPage() {
     </div>
   );
 }
-
