@@ -1,3 +1,4 @@
+// app/api/credit-notes/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -8,57 +9,46 @@ export async function GET(
   try {
     const { id } = await context.params;
 
-    // 1) Load credit note
-    const { data: note, error: noteErr } = await supabase
-      .from("rp_credit_notes")
+    const numericId = Number(id);
+    const useNumeric = !Number.isNaN(numericId);
+
+    const { data: creditNote, error: cnErr } = await supabase
+      .from("credit_notes")
       .select(
         `
         id,
-        note_number,
-        note_date,
+        credit_note_number,
+        credit_note_date,
         customer_id,
+        invoice_id,
+        reason,
         subtotal,
-        discount_percent,
-        discount_amount,
         vat_amount,
         total_amount,
-        previous_balance,
-        amount_paid,
-        gross_total,
-        balance_remaining,
+        status,
         customers ( name, address, phone, brn, vat_no, customer_code )
       `
       )
-      .eq("id", id)
+      .eq(useNumeric ? "id" : "credit_note_number", useNumeric ? numericId : id)
       .single();
 
-    if (noteErr) {
-      return NextResponse.json(
-        { error: noteErr.message || "Credit note not found" },
-        { status: 404 }
-      );
+    if (cnErr || !creditNote) {
+      return NextResponse.json({ ok: false, error: "Credit note not found" }, { status: 404 });
     }
 
-    // 2) Load items (if you have items table)
-    const { data: items, error: itemsErr } = await supabase
-      .from("rp_credit_note_items")
-      .select("*")
-      .eq("credit_note_id", id)
+    const { data: items, error: itErr } = await supabase
+      .from("credit_note_items")
+      .select("*, products ( sku, name )")
+      .eq("credit_note_id", creditNote.id)
       .order("id", { ascending: true });
 
-    if (itemsErr) {
-      return NextResponse.json(
-        { error: itemsErr.message || "Failed to load items" },
-        { status: 500 }
-      );
+    if (itErr) {
+      return NextResponse.json({ ok: false, error: itErr.message }, { status: 500 });
     }
 
-    return NextResponse.json({ note, items: items || [] });
+    return NextResponse.json({ ok: true, creditNote, items: items || [] });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || "Server error" },
-      { status: 500 }
-    );
+    console.error(err);
+    return NextResponse.json({ ok: false, error: "Server error" }, { status: 500 });
   }
 }
-

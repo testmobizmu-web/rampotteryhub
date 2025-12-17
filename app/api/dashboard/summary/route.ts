@@ -10,9 +10,7 @@ export async function GET(_req: NextRequest) {
     const todayStr = today.toISOString().slice(0, 10);
     const monthStartStr = startOfMonth.toISOString().slice(0, 10);
 
-    // -----------------------------
     // 1) TOTAL SALES TODAY
-    // -----------------------------
     const { data: todaySalesData } = await supabase
       .from("invoices")
       .select("total_amount, invoice_date")
@@ -25,9 +23,7 @@ export async function GET(_req: NextRequest) {
         0
       ) || 0;
 
-    // -----------------------------
     // 2) TOTAL SALES THIS MONTH
-    // -----------------------------
     const { data: monthSalesData } = await supabase
       .from("invoices")
       .select("total_amount, invoice_date")
@@ -40,9 +36,7 @@ export async function GET(_req: NextRequest) {
         0
       ) || 0;
 
-    // -----------------------------
     // 3) OUTSTANDING BALANCE
-    // -----------------------------
     const { data: outstandingData } = await supabase
       .from("invoices")
       .select("balance_remaining");
@@ -53,9 +47,7 @@ export async function GET(_req: NextRequest) {
         0
       ) || 0;
 
-    // -----------------------------
     // 4) LOW STOCK PRODUCTS
-    // -----------------------------
     const { data: lowStock } = await supabase
       .from("products")
       .select("id, sku, name, current_stock, reorder_level")
@@ -64,9 +56,7 @@ export async function GET(_req: NextRequest) {
       .order("current_stock", { ascending: true })
       .limit(10);
 
-    // -----------------------------
     // 5) RECENT INVOICES (LAST 10)
-    // -----------------------------
     const { data: recentInvoices } = await supabase
       .from("invoices")
       .select(
@@ -82,14 +72,8 @@ export async function GET(_req: NextRequest) {
       .order("invoice_date", { ascending: false })
       .limit(10);
 
-    // -----------------------------
     // 6) SALES BY MONTH (LAST 6 MONTHS)
-    // -----------------------------
-    const sixMonthsAgo = new Date(
-      today.getFullYear(),
-      today.getMonth() - 5,
-      1
-    );
+    const sixMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 5, 1);
     const sixMonthsAgoStr = sixMonthsAgo.toISOString().slice(0, 10);
 
     const { data: salesByMonth } = await supabase
@@ -110,22 +94,16 @@ export async function GET(_req: NextRequest) {
     const monthlyLabels = Object.keys(monthlyTotals).sort();
     const monthlyValues = monthlyLabels.map((k) => monthlyTotals[k]);
 
-    // -----------------------------
     // 7) SALES BY CUSTOMER (TOP 5)
-    // -----------------------------
     const { data: salesByCustomer } = await supabase
       .from("invoices")
-      .select(
-        `
-        total_amount,
-        customers ( name )
-      `
-      );
+      .select(`total_amount, customers ( name )`);
 
     const customerTotals: Record<string, number> = {};
     salesByCustomer?.forEach((row: any) => {
       const name = row.customers?.name || "Unknown";
-      customerTotals[name] = (customerTotals[name] || 0) + (row.total_amount || 0);
+      customerTotals[name] =
+        (customerTotals[name] || 0) + (row.total_amount || 0);
     });
 
     const customerEntries = Object.entries(customerTotals).sort(
@@ -135,31 +113,16 @@ export async function GET(_req: NextRequest) {
     const customerLabels = topCustomerEntries.map(([name]) => name);
     const customerValues = topCustomerEntries.map(([, total]) => total);
 
-    // -----------------------------
-    // 8) CREDIT / DEBIT NOTES (THIS MONTH)
-    //     ASSUMPTION: tables rp_credit_notes, rp_debit_notes
-    //     with columns: amount (numeric), date (date)
-    // -----------------------------
+    // 8) CREDIT NOTES (THIS MONTH) — from your real table credit_notes
     const { data: creditRows } = await supabase
-      .from("rp_credit_notes")
-      .select("amount, date")
-      .gte("date", monthStartStr)
-      .lte("date", todayStr);
-
-    const { data: debitRows } = await supabase
-      .from("rp_debit_notes")
-      .select("amount, date")
-      .gte("date", monthStartStr)
-      .lte("date", todayStr);
+      .from("credit_notes")
+      .select("total_amount, credit_note_date")
+      .gte("credit_note_date", monthStartStr)
+      .lte("credit_note_date", todayStr);
 
     const creditNotesTotal =
-      creditRows?.reduce((sum, r: any) => sum + (r.amount ?? 0), 0) ?? 0;
-    const debitNotesTotal =
-      debitRows?.reduce((sum, r: any) => sum + (r.amount ?? 0), 0) ?? 0;
+      creditRows?.reduce((sum: number, r: any) => sum + (r.total_amount ?? 0), 0) ?? 0;
 
-    // -----------------------------
-    // RESPONSE
-    // -----------------------------
     return NextResponse.json({
       totalSalesToday,
       totalSalesMonth,
@@ -171,7 +134,6 @@ export async function GET(_req: NextRequest) {
       customerLabels,
       customerValues,
       creditNotesTotal,
-      debitNotesTotal,
     });
   } catch (err: any) {
     console.error(err);
@@ -181,4 +143,5 @@ export async function GET(_req: NextRequest) {
     );
   }
 }
+
 

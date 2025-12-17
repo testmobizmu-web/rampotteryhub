@@ -1,7 +1,8 @@
+// app/page.tsx
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -31,9 +32,7 @@ type RecentInvoice = {
   invoice_date: string;
   total_amount: number;
   status: string | null;
-  customers: {
-    name: string | null;
-  } | null;
+  customers: { name: string | null } | null;
 };
 
 type DashboardData = {
@@ -46,8 +45,7 @@ type DashboardData = {
   monthlyValues: number[];
   customerLabels: string[];
   customerValues: number[];
-  creditNotesTotal: number; // NEW
-  debitNotesTotal: number; // NEW
+  creditNotesTotal: number;
 };
 
 export default function DashboardPage() {
@@ -61,11 +59,9 @@ export default function DashboardPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch("/api/dashboard/summary");
+        const res = await fetch("/api/dashboard/summary", { cache: "no-store" });
         const json = await res.json();
-        if (!res.ok) {
-          throw new Error(json.error || "Failed to load dashboard");
-        }
+        if (!res.ok) throw new Error(json.error || "Failed to load dashboard");
         setData(json);
       } catch (err: any) {
         console.error(err);
@@ -77,48 +73,26 @@ export default function DashboardPage() {
     load();
   }, []);
 
-  const primaryRed = "#b91c1c"; // dark red
-  const brightRed = "#ef4444"; // bright red
+  const barData = useMemo(() => {
+    return {
+      labels: data?.monthlyLabels ?? [],
+      datasets: [{ label: "Monthly Sales (Rs)", data: data?.monthlyValues ?? [] }],
+    };
+  }, [data]);
 
-  const kpiCard = (label: string, value: number, prefix = "Rs ", onClick?: () => void) => (
-  <div className="kpi-card" key={label} onClick={onClick} style={{ cursor: onClick ? "pointer" : "default" }}>
-    <div className="kpi-label">{label}</div>
-    <div className="kpi-value">{prefix}{value.toFixed(2)}</div>
-  </div>
-);
-
-  const barData = {
-    labels: data?.monthlyLabels ?? [],
-    datasets: [
-      {
-        label: "Monthly Sales (Rs)",
-        data: data?.monthlyValues ?? [],
-        backgroundColor: brightRed,
-        borderColor: primaryRed,
-        borderWidth: 1,
-      },
-    ],
-  };
-
-  const pieData = {
-    labels: data?.customerLabels ?? [],
-    datasets: [
-      {
-        data: data?.customerValues ?? [],
-        backgroundColor: [brightRed, primaryRed, "#fecaca", "#991b1b", "#fee2e2"],
-        borderColor: "#ffffff",
-        borderWidth: 2,
-      },
-    ],
-  };
+  const pieData = useMemo(() => {
+    return {
+      labels: data?.customerLabels ?? [],
+      datasets: [{ data: data?.customerValues ?? [] }],
+    };
+  }, [data]);
 
   const topCustomer =
     data && data.customerLabels.length > 0
-      ? {
-          name: data.customerLabels[0],
-          value: data.customerValues[0],
-        }
+      ? { name: data.customerLabels[0], value: data.customerValues[0] }
       : null;
+
+  const money = (n: number) => `Rs ${Number(n || 0).toFixed(2)}`;
 
   return (
     <div className="rp-app">
@@ -127,125 +101,108 @@ export default function DashboardPage() {
         <SidebarContent router={router} active="dashboard" />
       </aside>
 
-      {/* MAIN AREA */}
+      {/* MAIN */}
       <main className="dashboard-main">
         <div className="dashboard-inner">
-          {/* HEADER */}
-          <div className="dashboard-header">
+          <div className="lux-header">
             <div>
-              <h1 className="dashboard-title">RamPotteryHub Dashboard</h1>
-              <p className="dashboard-subtitle">
-                Cloud accounting &amp; stock overview for Ram Pottery Ltd.
-              </p>
+              <div className="lux-title">RamPotteryHub</div>
+              <div className="lux-sub">Accounting & stock — premium overview</div>
+              <div className="lux-chip-row">
+                <span className="lux-chip">Secure • Cloud</span>
+                <span className="lux-chip">VAT 15%</span>
+              </div>
             </div>
 
-            <div className="dashboard-header-right">
-              <div className="dashboard-quick-buttons">
-                <button
-                  className="primary"
-                  onClick={() => router.push("/invoices/new")}
-                >
-                  + New Invoice
-                </button>
-                <button onClick={() => router.push("/import-products")}>
-                  ⬆ Import Stock Excel
-                </button>
-                <button onClick={() => router.push("/customers")}>
-                  👥 Customers
-                </button>
-                <button onClick={() => router.push("/suppliers")}>
-                  🧾 Suppliers
-                </button>
-              </div>
-              <div className="rp-user-badge">A</div>
+            <div className="lux-actions">
+              <button className="lux-btn primary" onClick={() => router.push("/invoices/new")}>
+                + New Invoice
+              </button>
+              <button className="lux-btn" onClick={() => router.push("/invoices")}>
+                Reprint / View Invoices
+              </button>
+              <button className="lux-btn" onClick={() => router.push("/credit-notes")}>
+                Credit Notes
+              </button>
+              <button className="lux-btn" onClick={() => router.push("/import-products")}>
+                Import Stock Excel
+              </button>
+              <button className="lux-btn" onClick={() => router.push("/customers")}>
+                Customers
+              </button>
             </div>
           </div>
 
-          {/* LOADING / ERROR STATES */}
-          {loading && (
-            <p style={{ fontSize: 13, marginTop: 8 }}>Loading dashboard…</p>
-          )}
+          {loading && <p className="lux-msg">Loading dashboard…</p>}
+          {error && !loading && <p className="lux-err">{error}</p>}
 
-          {error && !loading && (
-            <p style={{ color: "red", fontSize: 13, marginTop: 8 }}>{error}</p>
-          )}
-
-          {/* MAIN CONTENT WHEN DATA READY */}
           {!loading && !error && data && (
             <>
-              {/* KPI ROW */}
-               <section className="kpi-row">
-  {[
-    { label: "Sales Today", value: data.totalSalesToday },
-    { label: "Sales This Month", value: data.totalSalesMonth },
-    { label: "Outstanding Balance", value: data.outstanding },
-  ].map((k) => (
-    <div key={k.label}>
-      {kpiCard(k.label, k.value)}
-    </div>
-  ))}
+              <div className="lux-grid">
+                <div className="lux-card kpi">
+                  <div className="kpi-label">Sales Today</div>
+                  <div className="kpi-value">{money(data.totalSalesToday)}</div>
+                  <div className="kpi-hint">All invoices dated today</div>
+                </div>
 
-  <div className="kpi-card" key="low-stock">
-    <div className="kpi-label">Low Stock Items</div>
-    <div className="kpi-value">{data.lowStock.length}</div>
-  </div>
+                <div className="lux-card kpi">
+                  <div className="kpi-label">Sales This Month</div>
+                  <div className="kpi-value">{money(data.totalSalesMonth)}</div>
+                  <div className="kpi-hint">Month-to-date performance</div>
+                </div>
 
-  {kpiCard(
-    "Credit Notes (This Month)",
-    data.creditNotesTotal,
-    "Rs ",
-    () => router.push("/credit-notes")
-  )}
+                <div className="lux-card kpi">
+                  <div className="kpi-label">Outstanding Balance</div>
+                  <div className="kpi-value">{money(data.outstanding)}</div>
+                  <div className="kpi-hint">Sum of balance remaining</div>
+                </div>
 
-  {kpiCard(
-    "Debit Notes (This Month)",
-    data.debitNotesTotal,
-    "Rs ",
-    () => router.push("/debit-notes")
-  )}
-</section>
+                <div className="lux-card kpi lux-click" onClick={() => router.push("/stock")}>
+                  <div className="kpi-label">Low Stock Items</div>
+                  <div className="kpi-value">{data.lowStock.length}</div>
+                  <div className="kpi-hint">Tap to open stock</div>
+                </div>
 
-              {/* CHARTS GRID */}
-              <section className="charts-grid">
-                <div className="chart-card">
-                  <div className="chart-title">Sales – Last 6 Months</div>
+                <div className="lux-card kpi lux-click" onClick={() => router.push("/credit-notes")}>
+                  <div className="kpi-label">Credit Notes (This Month)</div>
+                  <div className="kpi-value">{money(data.creditNotesTotal)}</div>
+                  <div className="kpi-hint">Issued credit notes total</div>
+                </div>
+
+                <div className="lux-card kpi lux-click" onClick={() => router.push("/reports")}>
+                  <div className="kpi-label">Reports</div>
+                  <div className="kpi-value">Open</div>
+                  <div className="kpi-hint">VAT • Sales • Commission</div>
+                </div>
+
+                <div className="lux-card lux-two">
+                  <div className="section-title">Sales — Last 6 Months</div>
                   {data.monthlyLabels.length ? (
                     <Bar data={barData} />
                   ) : (
-                    <p style={{ fontSize: 12 }}>No sales data yet.</p>
+                    <p className="lux-msg">No sales data yet.</p>
                   )}
                 </div>
 
-                <div className="chart-card">
-                  <div className="chart-title">Sales by Customer (Top 5)</div>
+                <div className="lux-card lux-two">
+                  <div className="section-title">Sales by Customer (Top 5)</div>
                   {data.customerLabels.length ? (
                     <>
                       <Pie data={pieData} />
                       {topCustomer && (
-                        <p
-                          style={{
-                            marginTop: 8,
-                            fontSize: 12,
-                          }}
-                        >
-                          Top customer:&nbsp;
-                          <strong>{topCustomer.name}</strong> – Rs{" "}
-                          {topCustomer.value.toFixed(2)}
+                        <p className="lux-note">
+                          Top customer: <strong>{topCustomer.name}</strong> — {money(topCustomer.value)}
                         </p>
                       )}
                     </>
                   ) : (
-                    <p style={{ fontSize: 12 }}>No customer data yet.</p>
+                    <p className="lux-msg">No customer data yet.</p>
                   )}
                 </div>
-              </section>
 
-              {/* TABLES GRID */}
-              <section className="tables-grid">
-                {/* Recent invoices */}
-                <div className="table-card">
-                  <div className="table-title">Recent Invoices</div>
-                  <table>
+                <div className="lux-card lux-two">
+                  <div className="section-title">Recent Invoices</div>
+                  <table className="lux-table">
                     <thead>
                       <tr>
                         <th>No.</th>
@@ -259,22 +216,18 @@ export default function DashboardPage() {
                       {data.recentInvoices.map((inv) => (
                         <tr
                           key={inv.id}
+                          className="lux-row-click"
                           onClick={() => router.push(`/invoices/${inv.id}`)}
-                          style={{ cursor: "pointer" }}
                         >
                           <td>{inv.invoice_number}</td>
-                          <td>
-                            {new Date(inv.invoice_date).toLocaleDateString("en-GB")}
-                          </td>
+                          <td>{new Date(inv.invoice_date).toLocaleDateString("en-GB")}</td>
                           <td>{inv.customers?.name || "-"}</td>
-                          <td>{inv.total_amount.toFixed(2)}</td>
+                          <td>{Number(inv.total_amount || 0).toFixed(2)}</td>
                           <td>
                             <span
                               className={
-                                "status-pill " +
-                                ((inv.status || "UNPAID").toUpperCase() === "PAID"
-                                  ? "status-paid"
-                                  : "status-unpaid")
+                                "pill " +
+                                ((inv.status || "UNPAID").toUpperCase() === "PAID" ? "paid" : "unpaid")
                               }
                             >
                               {(inv.status || "UNPAID").toUpperCase()}
@@ -289,24 +242,20 @@ export default function DashboardPage() {
                       )}
                     </tbody>
                   </table>
-                  <div
-                    className="panel-footer-link"
-                    onClick={() => router.push("/invoices")}
-                  >
+                  <div className="lux-link" onClick={() => router.push("/invoices")}>
                     View all invoices →
                   </div>
                 </div>
 
-                {/* Low stock + quick links */}
-                <div className="table-card">
-                  <div className="table-title">Low Stock Products</div>
-                  <table>
+                <div className="lux-card lux-two">
+                  <div className="section-title">Low Stock Products</div>
+                  <table className="lux-table">
                     <thead>
                       <tr>
                         <th>Code</th>
                         <th>Product</th>
                         <th>Stock</th>
-                        <th>Reorder Level</th>
+                        <th>Reorder</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -326,63 +275,29 @@ export default function DashboardPage() {
                     </tbody>
                   </table>
 
-                  <div style={{ marginTop: 12 }}>
-                    <div className="panel-title">Quick Links</div>
-                    <ul
-                      style={{
-                        listStyle: "none",
-                        padding: 0,
-                        margin: 0,
-                        fontSize: 12,
-                        color: "#6b7280",
-                      }}
-                    >
-                      <li
-                        style={{ cursor: "pointer", marginBottom: 4 }}
-                        onClick={() => router.push("/stock")}
-                      >
-                        • View full stock register
-                      </li>
-                      <li
-                        style={{ cursor: "pointer", marginBottom: 4 }}
-                        onClick={() => router.push("/reports")}
-                      >
-                        • Sales &amp; outstanding reports
-                      </li>
-                      <li
-                        style={{ cursor: "pointer" }}
-                        onClick={() => router.push("/customers")}
-                      >
-                        • Customer statements of account
-                      </li>
-                    </ul>
+                  <div className="lux-quick">
+                    <div className="section-title">Quick Links</div>
+                    <div className="lux-link" onClick={() => router.push("/stock")}>
+                      • Stock register
+                    </div>
+                    <div className="lux-link" onClick={() => router.push("/reports")}>
+                      • Reports (VAT / Sales / Commission)
+                    </div>
+                    <div className="lux-link" onClick={() => router.push("/customers")}>
+                      • Customers & pricing
+                    </div>
                   </div>
                 </div>
-              </section>
+              </div>
+
+              <div className="lux-footer">
+                © {new Date().getFullYear()} Ram Pottery Ltd • Built by{" "}
+                <a href="https://mobiz.mu" target="_blank" rel="noreferrer">
+                  MoBiz.mu
+                </a>
+              </div>
             </>
           )}
-
-          {/* FOOTER */}
-          <footer
-            style={{
-              marginTop: 16,
-              fontSize: 11,
-              color: "#6b7280",
-              textAlign: "center",
-            }}
-          >
-            © {new Date().getFullYear()} Ram Pottery Ltd • Accounting software
-            built by{" "}
-            <a
-              href="https://mobiz.mu"
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: "#b91c1c", fontWeight: 600 }}
-            >
-              MoBiz.mu
-            </a>{" "}
-            <span style={{ color: "#dc2626" }}>♥</span>
-          </footer>
         </div>
       </main>
     </div>
@@ -402,11 +317,10 @@ type SidebarProps = {
     | "customers"
     | "suppliers"
     | "reports"
-    | "adminUsers"; // Admin → Users & Permissions
+    | "adminUsers";
 };
 
 function SidebarContent({ router, active }: SidebarProps) {
-  // Permissions derived from the logged-in user saved in localStorage by the login page
   const [canEditStock, setCanEditStock] = useState(true);
   const [canViewReports, setCanViewReports] = useState(true);
   const [canManageUsers, setCanManageUsers] = useState(true);
@@ -426,113 +340,76 @@ function SidebarContent({ router, active }: SidebarProps) {
       setCanViewReports(isAdmin || !!perms.canViewReports);
       setCanManageUsers(isAdmin || !!perms.canManageUsers);
     } catch {
-      // if parsing fails, leave defaults (admin during testing)
+      // keep defaults
     }
   }, []);
 
   return (
     <>
-      {/* LOGO + BRAND */}
       <div className="rp-sidebar-logo">
-        <Image
-          src="/images/logo/logo.png"
-          alt="Ram Pottery Logo"
-          width={34}
-          height={34}
-        />
+        <Image src="/images/logo/logo.png" alt="Ram Pottery Logo" width={34} height={34} />
         <div>
           <div className="rp-sidebar-logo-title">Ram Pottery Ltd</div>
-          <div className="rp-sidebar-logo-sub">
-            Online Accounting &amp; Stock Manager
-          </div>
+          <div className="rp-sidebar-logo-sub">Online Accounting &amp; Stock Manager</div>
         </div>
       </div>
 
-      {/* NAVIGATION */}
       <div className="rp-sidebar-nav">
-        {/* Overview */}
         <div className="rp-nav-section-title">Overview</div>
         <button
-          className={
-            "rp-nav-item " + (active === "dashboard" ? "rp-nav-item-active" : "")
-          }
+          className={"rp-nav-item " + (active === "dashboard" ? "rp-nav-item-active" : "")}
           onClick={() => router.push("/")}
         >
           <span>Dashboard</span>
         </button>
 
-        {/* Sales */}
         <div className="rp-nav-section-title">Sales</div>
         <button
-          className={
-            "rp-nav-item " +
-            (active === "invoices" ? "rp-nav-item-active" : "")
-          }
+          className={"rp-nav-item " + (active === "invoices" ? "rp-nav-item-active" : "")}
           onClick={() => router.push("/invoices")}
         >
           <span>Invoices</span>
         </button>
 
         <div className="rp-nav-section-title">Notes</div>
-         <button className="rp-nav-item" onClick={() => router.push("/credit-notes")}>
-           <span>Credit Notes</span>
-         </button>
-          <button className="rp-nav-item" onClick={() => router.push("/debit-notes")}>
-          <span>Debit Notes</span>
+        <button className="rp-nav-item" onClick={() => router.push("/credit-notes")}>
+          <span>Credit Notes</span>
         </button>
 
-
-        {/* Stock */}
         {canEditStock && (
           <>
             <div className="rp-nav-section-title">Stock</div>
             <button
-              className={
-                "rp-nav-item " + (active === "stock" ? "rp-nav-item-active" : "")
-              }
+              className={"rp-nav-item " + (active === "stock" ? "rp-nav-item-active" : "")}
               onClick={() => router.push("/stock")}
             >
               <span>Stock &amp; Categories</span>
             </button>
-            <button
-              className="rp-nav-item"
-              onClick={() => router.push("/stock/movements")}
-            >
+            <button className="rp-nav-item" onClick={() => router.push("/stock/movements")}>
               <span>Stock Movements</span>
             </button>
           </>
         )}
 
-        {/* Contacts */}
         <div className="rp-nav-section-title">Contacts</div>
         <button
-          className={
-            "rp-nav-item " +
-            (active === "customers" ? "rp-nav-item-active" : "")
-          }
+          className={"rp-nav-item " + (active === "customers" ? "rp-nav-item-active" : "")}
           onClick={() => router.push("/customers")}
         >
           <span>Customers</span>
         </button>
         <button
-          className={
-            "rp-nav-item " +
-            (active === "suppliers" ? "rp-nav-item-active" : "")
-          }
+          className={"rp-nav-item " + (active === "suppliers" ? "rp-nav-item-active" : "")}
           onClick={() => router.push("/suppliers")}
         >
           <span>Suppliers</span>
         </button>
 
-        {/* Reports */}
         {canViewReports && (
           <>
             <div className="rp-nav-section-title">Reports</div>
             <button
-              className={
-                "rp-nav-item " +
-                (active === "reports" ? "rp-nav-item-active" : "")
-              }
+              className={"rp-nav-item " + (active === "reports" ? "rp-nav-item-active" : "")}
               onClick={() => router.push("/reports")}
             >
               <span>Reports &amp; Statements</span>
@@ -540,15 +417,11 @@ function SidebarContent({ router, active }: SidebarProps) {
           </>
         )}
 
-        {/* ADMIN – USERS & PERMISSIONS */}
         {canManageUsers && (
           <>
             <div className="rp-nav-section-title">Admin</div>
             <button
-              className={
-                "rp-nav-item " +
-                (active === "adminUsers" ? "rp-nav-item-active" : "")
-              }
+              className={"rp-nav-item " + (active === "adminUsers" ? "rp-nav-item-active" : "")}
               onClick={() => router.push("/admin/users")}
             >
               <span>Users &amp; Permissions</span>
@@ -557,11 +430,10 @@ function SidebarContent({ router, active }: SidebarProps) {
         )}
       </div>
 
-      {/* FOOTER */}
       <div className="rp-sidebar-footer">
-        Logged in as <strong>Admin</strong> • rampottery.mu
+        Logged in • rampottery.mu
         <br />
-        Secure cloud access &amp; testing included.
+        Secure cloud access enabled.
       </div>
     </>
   );

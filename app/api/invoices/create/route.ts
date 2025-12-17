@@ -1,6 +1,10 @@
-// app/api/invoices/create/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
+
+function nextInvoiceNumber(lastId: number | null): string {
+  const next = (lastId ?? 0) + 1;
+  return "RP-" + String(next).padStart(4, "0");
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,128 +15,98 @@ export async function POST(req: NextRequest) {
       invoiceDate,
       purchaseOrderNo,
       salesRep,
-      subtotal,
-      discountPercent,
-      discountAmount,
-      vatAmount,
-      totalAmount,
+
+      vatPercent,
+      discountPercent, // will be 0
+      discountAmount,  // will be 0
+
       previousBalance,
       amountPaid,
-      grossTotal,
+      subtotal,
+      vatAmount,
+      totalAmount,
       balanceRemaining,
+      grossTotal,
+
       items,
     } = body;
 
-    // --- basic validation ---
-    if (!customerId || !invoiceDate) {
+    if (!customerId || !invoiceDate || !Array.isArray(items) || !items.length) {
       return NextResponse.json(
-        { error: "customerId and invoiceDate are required" },
+        { ok: false, error: "Missing required invoice data." },
         { status: 400 }
       );
     }
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return NextResponse.json(
-        { error: "At least one invoice item is required" },
-        { status: 400 }
-      );
-    }
-
-    // --- generate next invoice number: RP-0001, RP-0002, ... ---
-    const { data: lastList, error: lastErr } = await supabase
+    const { data: lastInv, error: lastErr } = await supabase
       .from("invoices")
-      .select("invoice_number")
+      .select("id")
       .order("id", { ascending: false })
-      .limit(1);
+      .limit(1)
+      .maybeSingle();
 
-    if (lastErr) {
-      console.error("Error loading last invoice:", lastErr);
-    }
+    if (lastErr) throw lastErr;
 
-    let nextNumber = 1;
-    if (lastList && lastList.length && lastList[0].invoice_number) {
-      const match = String(lastList[0].invoice_number).match(/(\d+)$/);
-      if (match) {
-        nextNumber = Number(match[1]) + 1;
-      }
-    }
-    const invoiceNumber = `RP-${String(nextNumber).padStart(4, "0")}`;
+    const invoiceNumber = nextInvoiceNumber(lastInv?.id ?? null);
 
-    const status = balanceRemaining <= 0 ? "PAID" : "UNPAID";
-
-    // --- insert into invoices table ---
-    const { data: createdInvoice, error: invError } = await supabase
+    const { data: newInv, error: invError } = await supabase
       .from("invoices")
       .insert({
         invoice_number: invoiceNumber,
-        invoice_date: invoiceDate,
         customer_id: customerId,
-
-        // OPTIONAL METADATA – make sure these columns exist in your table
+        invoice_date: invoiceDate,
         purchase_order_no: purchaseOrderNo || null,
         sales_rep: salesRep || null,
 
         subtotal,
-        discount_percent: discountPercent,
-        discount_amount: discountAmount,
         vat_amount: vatAmount,
         total_amount: totalAmount,
         previous_balance: previousBalance,
         amount_paid: amountPaid,
-        gross_total: grossTotal,
+        gross_total: grossTotal ?? totalAmount,
         balance_remaining: balanceRemaining,
-        status,
+        status: "UNPAID",
+
+        vat_percent: vatPercent,
+        discount_percent: discountPercent ?? 0,
+        discount_amount: discountAmount ?? 0,
       })
       .select("id, invoice_number")
       .single();
 
-    if (invError || !createdInvoice) {
-      console.error("Invoice insert error:", invError);
-      return NextResponse.json(
-        { error: invError?.message || "Failed to create invoice" },
-        { status: 500 }
-      );
-    }
+    if (invError || !newInv) throw invError;
 
-    const invoiceId = createdInvoice.id;
+    const invoiceId = newInv.id;
 
-    // --- format invoice_items insert ---
-    const itemsToInsert = items.map((item: any) => ({
+    const itemsToInsert = items.map((it: any) => ({
       invoice_id: invoiceId,
-      product_id: item.product_id ?? null,
-      box_qty: item.box_qty ?? 0,
-      units_per_box: item.units_per_box ?? 0,
-      total_qty: item.total_qty ?? 0,
-      unit_price_excl_vat: item.unit_price_excl_vat ?? 0,
-      unit_vat: item.unit_vat ?? 0,
+      product_id: it.product_id,
+      box_qty: it.box_qty,
+      units_per_box: it.units_per_box,
+      total_qty: it.total_qty,
+      unit_price_excl_vat: it.unit_price_excl_vat,
+      unit_vat: it.unit_vat,
+      unit_price_incl_vat: it.unit_price_incl_vat ?? null,
+      line_total: it.line_total ?? null,
     }));
 
     const { error: itemsError } = await supabase
       .from("invoice_items")
       .insert(itemsToInsert);
 
-    if (itemsError) {
-      console.error("Invoice items insert error:", itemsError);
-      return NextResponse.json(
-        {
-          error:
-            itemsError.message ||
-            "Invoice created but items failed. Please contact support.",
-        },
-        { status: 500 }
-      );
-    }
+    if (itemsError) throw itemsError;
 
     return NextResponse.json({
-      success: true,
+      ok: true,
       invoiceId,
-      invoiceNumber,
+      invoiceNumber: newInv.invoice_number,
     });
   } catch (err: any) {
-    console.error("Unexpected create invoice error:", err);
+    console.error(err);
     return NextResponse.json(
-      { error: err?.message || "Unexpected error while creating invoice" },
+      { ok: false, error: err?.message || "Failed to create invoice" },
       { status: 500 }
     );
   }
 }
+

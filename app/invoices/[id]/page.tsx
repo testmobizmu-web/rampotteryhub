@@ -1,9 +1,10 @@
 // app/invoices/[id]/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Image from "next/image";
+import { RamPotteryDoc } from "@/components/RamPotteryDoc";
 
 type CustomerInfo = {
   id: number;
@@ -21,9 +22,9 @@ type InvoiceView = {
   invoice_date: string;
   purchase_order_no: string | null;
   sales_rep: string | null;
+  sales_rep_phone: string | null;
+
   subtotal: number | null;
-  discount_percent: number | null;
-  discount_amount: number | null;
   vat_amount: number | null;
   total_amount: number | null;
   previous_balance: number | null;
@@ -31,14 +32,11 @@ type InvoiceView = {
   gross_total: number | null;
   balance_remaining: number | null;
   status: string | null;
+
   customers: CustomerInfo | null;
 };
 
-type ProductInfo = {
-  id: number;
-  item_code: string | null;
-  name: string | null;
-};
+type ProductInfo = { id: number; item_code: string | null; name: string | null };
 
 type InvoiceItemView = {
   id: number;
@@ -48,13 +46,51 @@ type InvoiceItemView = {
   total_qty: number | null;
   unit_price_excl_vat: number | null;
   unit_vat: number | null;
+  unit_price_incl_vat?: number | null;
+  line_total?: number | null;
   products: ProductInfo | null;
 };
 
-type ApiResponse = {
-  invoice: InvoiceView;
-  items: InvoiceItemView[];
+type ApiResponse = { invoice: InvoiceView; items: InvoiceItemView[] };
+
+type CreditNoteRow = {
+  id: number;
+  credit_note_number: string | null;
+  credit_note_date: string | null;
+  total_amount: number | null;
+  status: string | null;
 };
+
+function round2(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+function toWhatsAppDigits(phoneRaw: string | null | undefined) {
+  const raw = String(phoneRaw || "").trim();
+  if (!raw) return null;
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits) return null;
+  if (digits.length === 8) return `230${digits}`; // auto +230
+  return digits;
+}
+
+function buildPaidWhatsAppText(params: {
+  customerName: string;
+  invoiceNo: string;
+  total: number;
+  date: string;
+}) {
+  const { customerName, invoiceNo, total, date } = params;
+
+  const msg =
+    `Bonjour ${customerName},\n\n` +
+    `Nous confirmons la réception de votre paiement pour la facture ${invoiceNo} du ${date}.\n` +
+    `Montant reçu : Rs ${total.toFixed(2)}.\n\n` +
+    `Merci pour votre confiance.\n` +
+    `— Ram Pottery Ltd`;
+
+  return encodeURIComponent(msg);
+}
 
 export default function InvoiceDetailPage() {
   const router = useRouter();
@@ -62,443 +98,353 @@ export default function InvoiceDetailPage() {
 
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const [actionBusy, setActionBusy] = useState<null | "MARK_PAID" | "MARK_UNPAID" | "ADD_PAYMENT">(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [partialAmount, setPartialAmount] = useState<string>("");
+
+  const [cnLoading, setCnLoading] = useState(false);
+  const [cnError, setCnError] = useState<string | null>(null);
+  const [creditNotes, setCreditNotes] = useState<CreditNoteRow[]>([]);
+
+  async function loadInvoice() {
     const id = params.id;
     if (!id) return;
 
-    async function load() {
-      try {
-        setLoading(true);
-        setError(null);
+    try {
+      setLoading(true);
+      setActionError(null);
 
-        const res = await fetch(`/api/invoices/${id}`);
-        const json = await res.json();
-        if (!res.ok) {
-          throw new Error(json.error || "Failed to load invoice");
-        }
-        setData(json);
-      } catch (err: any) {
-        console.error(err);
-        setError(err.message || "Error loading invoice");
-      } finally {
-        setLoading(false);
-      }
+      const res = await fetch(`/api/invoices/${id}`, { cache: "no-store" });
+      const json = await res.json();
+
+      if (!res.ok) throw new Error(json.error || "Failed to load invoice");
+      setData(json);
+      setPartialAmount("");
+    } catch (err: any) {
+      setActionError(err.message || "Error loading invoice");
+    } finally {
+      setLoading(false);
     }
+  }
 
-    load();
+  async function loadCreditNotes(invoiceId: number) {
+    setCnLoading(true);
+    setCnError(null);
+    try {
+      const res = await fetch(`/api/credit-notes/by-invoice?invoiceId=${invoiceId}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || "Failed to load credit notes");
+      setCreditNotes(json.creditNotes || []);
+    } catch (e: any) {
+      setCnError(e.message || "Failed to load credit notes");
+      setCreditNotes([]);
+    } finally {
+      setCnLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadInvoice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
 
-  const handlePrint = () => {
-    if (typeof window !== "undefined") {
-      window.print();
+  useEffect(() => {
+    const invId = data?.invoice?.id;
+    if (!invId) return;
+    loadCreditNotes(invId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.invoice?.id]);
+
+  async function updatePayment(action: "MARK_PAID" | "MARK_UNPAID" | "ADD_PAYMENT") {
+    if (!data?.invoice?.id) return;
+
+    setActionBusy(action);
+    setActionError(null);
+
+    try {
+      const body: any = { action };
+
+      if (action === "ADD_PAYMENT") {
+        const n = Number(partialAmount || 0);
+        if (Number.isNaN(n) || n <= 0) {
+          alert("Enter a valid payment amount (> 0).");
+          setActionBusy(null);
+          return;
+        }
+        body.paymentAmount = n;
+      }
+
+      const res = await fetch(`/api/invoices/${data.invoice.id}/payment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || "Payment update failed");
+
+      await loadInvoice();
+    } catch (err: any) {
+      setActionError(err.message || "Payment update failed");
+    } finally {
+      setActionBusy(null);
     }
-  };
-
-  if (loading) {
-    return (
-      <div className="rp-app rp-invoice-page">
-        <main className="rp-page-main rp-invoice-main">
-          <p style={{ marginTop: 40, textAlign: "center" }}>
-            Loading invoice…
-          </p>
-        </main>
-      </div>
-    );
   }
 
-  if (error || !data) {
-    return (
-      <div className="rp-app rp-invoice-page">
-        <main className="rp-page-main rp-invoice-main">
-          <p style={{ marginTop: 40, textAlign: "center", color: "#b91c1c" }}>
-            {error || "Invoice not found"}
-          </p>
-        </main>
-      </div>
-    );
-  }
+  const invoice = data?.invoice;
+  const items = data?.items ?? [];
+  const customer = invoice?.customers;
 
-  const { invoice, items } = data;
-  const customer = invoice.customers;
-
-  const invoiceDateFormatted = invoice.invoice_date
+  const invoiceDateFormatted = invoice?.invoice_date
     ? new Date(invoice.invoice_date).toLocaleDateString("en-GB")
     : "";
 
-  // fallbacks if DB fields are null
-  const subtotal = invoice.subtotal ?? 0;
-  const discountPercent = invoice.discount_percent ?? 0;
-  const discountAmount = invoice.discount_amount ?? 0;
-  const vatAmount = invoice.vat_amount ?? 0;
-  const totalAmount = invoice.total_amount ?? 0;
-  const previousBalance = invoice.previous_balance ?? 0;
-  const amountPaid = invoice.amount_paid ?? 0;
-  const grossTotal = invoice.gross_total ?? totalAmount;
-  const balanceRemaining = invoice.balance_remaining ?? 0;
+  const statusUpper = String(invoice?.status || "UNPAID").toUpperCase();
+  const isPaid = statusUpper === "PAID";
+
+  const computed = useMemo(() => {
+    const subtotal = Number(invoice?.subtotal || 0);
+    const vatAmount = Number(invoice?.vat_amount || 0);
+    const totalAmount = Number(invoice?.total_amount || 0);
+    const previousBalance = Number(invoice?.previous_balance || 0);
+
+    const grossTotal = Number(invoice?.gross_total ?? (totalAmount + previousBalance));
+    const amountPaid = Number(invoice?.amount_paid || 0);
+    const balanceRemaining = Number(invoice?.balance_remaining ?? Math.max(0, grossTotal - amountPaid));
+
+    return {
+      subtotal: round2(subtotal),
+      vatAmount: round2(vatAmount),
+      totalAmount: round2(totalAmount),
+      previousBalance: round2(previousBalance),
+      grossTotal: round2(grossTotal),
+      amountPaid: round2(amountPaid),
+      balanceRemaining: round2(balanceRemaining),
+    };
+  }, [invoice]);
+
+  if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading invoice…</div>;
+  if (!invoice) return <div style={{ padding: 20, color: "#b91c1c" }}>{actionError || "Invoice not found"}</div>;
 
   return (
     <div className="rp-app rp-invoice-page">
-      {/* Minimal sidebar just like NewInvoicePage */}
-      <aside className="rp-sidebar">
+      {/* Sidebar (keep your existing style) */}
+      <aside className="rp-sidebar print-hidden">
         <div className="rp-sidebar-logo">
-          <Image
-            src="/images/logo/logo.png"
-            alt="Ram Pottery Logo"
-            width={34}
-            height={34}
-          />
+          <Image src="/images/logo/logo.png" alt="Ram Pottery Logo" width={34} height={34} />
           <div>
             <div className="rp-sidebar-logo-title">Ram Pottery Ltd</div>
-            <div className="rp-sidebar-logo-sub">
-              Online Accounting &amp; Stock Manager
-            </div>
+            <div className="rp-sidebar-logo-sub">Online Accounting &amp; Stock Manager</div>
           </div>
         </div>
-        <button
-          className="rp-nav-item"
-          onClick={() => router.push("/invoices")}
-          style={{ marginTop: 16 }}
-        >
+
+        <button className="rp-nav-item" onClick={() => router.push("/invoices")} style={{ marginTop: 16 }}>
           ← Back to Invoices
         </button>
+
+        <button className="btn-primary-red" style={{ marginTop: 12, width: "100%" }} onClick={() => window.print()}>
+          🖨 Print / Download PDF
+        </button>
+
+        <div style={{ marginTop: 14 }}>
+          <button
+            className="btn-primary-red"
+            disabled={actionBusy !== null}
+            onClick={() => updatePayment("MARK_PAID")}
+            style={{ width: "100%", marginBottom: 8 }}
+          >
+            {actionBusy === "MARK_PAID" ? "Saving…" : "✅ Mark as PAID"}
+          </button>
+
+          <button
+            className="rp-nav-item"
+            disabled={actionBusy !== null}
+            onClick={() => updatePayment("MARK_UNPAID")}
+            style={{ width: "100%", marginBottom: 10 }}
+          >
+            {actionBusy === "MARK_UNPAID" ? "Saving…" : "↩ Mark as UNPAID"}
+          </button>
+
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.75, marginBottom: 6 }}>Partial Payment (Add)</div>
+
+            <input
+              className="rp-input-plain"
+              value={partialAmount}
+              onChange={(e) => setPartialAmount(e.target.value)}
+              placeholder="Amount received now (Rs)"
+              inputMode="decimal"
+              style={{ width: "100%", marginBottom: 8 }}
+            />
+
+            <button className="rp-nav-item" disabled={actionBusy !== null} onClick={() => updatePayment("ADD_PAYMENT")} style={{ width: "100%" }}>
+              {actionBusy === "ADD_PAYMENT" ? "Saving…" : "➕ Add Payment"}
+            </button>
+          </div>
+
+          <button
+            className="rp-nav-item"
+            disabled={!isPaid}
+            onClick={() => {
+              if (!isPaid) return alert("Invoice must be PAID to send WhatsApp confirmation.");
+              const wa = toWhatsAppDigits(customer?.phone);
+              if (!wa) return alert("Customer phone missing/invalid for WhatsApp.");
+
+              const msg = buildPaidWhatsAppText({
+                customerName: customer?.name || "Client",
+                invoiceNo: invoice.invoice_number,
+                total: computed.grossTotal,
+                date: invoiceDateFormatted,
+              });
+
+              window.open(`https://wa.me/${wa}?text=${msg}`, "_blank");
+            }}
+            style={{ width: "100%", marginTop: 2 }}
+          >
+            💬 WhatsApp Paid Confirmation
+          </button>
+
+          <div style={{ marginTop: 12 }}>
+            <button
+              className="rp-nav-item"
+              onClick={() => router.push(`/credit-notes/new?customerId=${invoice.customers?.id || ""}&invoiceId=${invoice.id}`)}
+              style={{ width: "100%", marginBottom: 8 }}
+            >
+              ➕ Create Credit Note (for this invoice)
+            </button>
+
+            <button className="rp-nav-item" onClick={() => router.push("/credit-notes")} style={{ width: "100%" }}>
+              📄 View Credit Notes
+            </button>
+          </div>
+
+          {actionError && <div style={{ marginTop: 10, color: "#fb7185", fontSize: 12 }}>{actionError}</div>}
+        </div>
       </aside>
 
+      {/* Main: EXACT TEMPLATE DOC */}
       <main className="rp-page-main rp-invoice-main">
-        <div className="rp-invoice-paper">
-          {/* ACTIONS (Print) */}
-          <div className="rp-invoice-actions print-hidden">
-            <button
-              type="button"
-              className="btn-soft"
-              onClick={() => router.push("/invoices")}
-            >
-              ← Back
-            </button>
-            <button
-              type="button"
-              className="btn-primary-red"
-              onClick={handlePrint}
-            >
-              🖨 Print / Download PDF
-            </button>
-          </div>
+        <RamPotteryDoc
+          header={{ docTitle: "VAT INVOICE", statusText: statusUpper }}
+          customer={{
+            customerCode: customer?.customer_code,
+            name: customer?.name,
+            address: customer?.address,
+            tel: customer?.phone,
+            brn: customer?.brn,
+            vatNo: customer?.vat_no,
+          }}
+          rightBlockTitle="INVOICE DETAILS"
+          rightLines={[
+            { label: "INVOICE NO:", value: invoice.invoice_number },
+            { label: "DATE:", value: invoiceDateFormatted },
+            { label: "PURCHASE ORDER NO:", value: invoice.purchase_order_no || "" },
+            { label: "SALES REP:", value: invoice.sales_rep || "", extraLabel: "Tel:", extraValue: invoice.sales_rep_phone || "" },
+          ]}
+          tableHead={
+            <tr>
+              <th style={{ width: 46 }}>SN</th>
+              <th style={{ width: 98 }}>ITEM CODE</th>
+              <th style={{ width: 60 }}>BOX</th>
+              <th style={{ width: 74 }}>UNIT PER BOX</th>
+              <th style={{ width: 86 }}>TOTAL QTY</th>
+              <th>DESCRIPTION</th>
+              <th style={{ width: 92 }}>UNIT PRICE (Excl Vat)</th>
+              <th style={{ width: 60 }}>VAT</th>
+              <th style={{ width: 92 }}>UNIT PRICE (Incl Vat)</th>
+              <th style={{ width: 96 }}>TOTAL AMOUNT (Incl Vat)</th>
+            </tr>
+          }
+          tableBody={
+            <>
+              {items.map((r, idx) => {
+                const boxQty = Number(r.box_qty || 0);
+                const unitsPerBox = Number(r.units_per_box || 0);
+                const totalQty = Number(r.total_qty || 0);
+                const unitEx = Number(r.unit_price_excl_vat || 0);
+                const unitVat = Number(r.unit_vat || 0);
+                const unitIncl = Number((r.unit_price_incl_vat ?? unitEx + unitVat) || 0);
+                const lineTotal = Number((r.line_total ?? unitIncl * totalQty) || 0);
 
-          {/* TOP HEADER */}
-          <header className="rp-invoice-header">
-            <div className="rp-invoice-logo-block">
-              <Image
-                src="/images/logo/logo.png"
-                alt="Ram Pottery Logo"
-                width={70}
-                height={70}
-              />
-              <div className="rp-invoice-logo-text">
-                <h1>RAM POTTERY LTD</h1>
-                <p>MANUFACTURER &amp; IMPORTER OF QUALITY CLAY</p>
-                <p>PRODUCTS AND OTHER RELIGIOUS ITEMS</p>
-                <p>
-                  Robert Kennedy Street, Reunion Maurel, Petit Raffray -
-                  Mauritius
-                </p>
-                <p>
-                  Tel: +230 57788884 +230 58060268 +230 52522844 &nbsp; Email:
-                  info@rampottery.com &nbsp; Web: www.rampottery.com
-                </p>
-              </div>
-            </div>
-            <div className="rp-invoice-title-row">
-              <div className="rp-invoice-title">VAT INVOICE</div>
-            </div>
-          </header>
-
-          {/* BRN / VAT strip */}
-          <div className="rp-invoice-brn-row">
-            <div className="rp-invoice-brn-cell">
-              BRN: C17144377 | VAT: 123456789
-            </div>
-          </div>
-
-          {/* CUSTOMER + ACCOUNT DETAILS */}
-          <section className="rp-invoice-top-grid">
-            <div className="rp-invoice-customer-box">
-              <div className="rp-invoice-section-heading red">
-                CUSTOMER DETAILS
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Customer:</label>
-                <input
-                  disabled
-                  value={customer?.name || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Name:</label>
-                <input
-                  disabled
-                  value={customer?.name || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Address:</label>
-                <textarea
-                  disabled
-                  rows={2}
-                  value={customer?.address || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Tel:</label>
-                <input
-                  disabled
-                  value={customer?.phone || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>BRN:</label>
-                <input
-                  disabled
-                  value={customer?.brn || ""}
-                  className="rp-input-plain small"
-                />
-                <label>VAT No:</label>
-                <input
-                  disabled
-                  value={customer?.vat_no || ""}
-                  className="rp-input-plain small"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Customer Code:</label>
-                <input
-                  disabled
-                  value={customer?.customer_code || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-            </div>
-
-            <div className="rp-invoice-account-box">
-              <div className="rp-invoice-section-heading red">
-                ACCOUNT / INVOICE DETAILS
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Invoice No:</label>
-                <input
-                  disabled
-                  value={invoice.invoice_number}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Date:</label>
-                <input
-                  disabled
-                  value={invoiceDateFormatted}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Purchase Order No:</label>
-                <input
-                  disabled
-                  value={invoice.purchase_order_no || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>Sales Rep:</label>
-                <input
-                  disabled
-                  value={invoice.sales_rep || ""}
-                  className="rp-input-plain"
-                />
-              </div>
-            </div>
-          </section>
-
-          {/* ITEMS TABLE */}
-          <section className="rp-invoice-items">
-            <table>
-              <thead>
-                <tr>
-                  <th>SN</th>
-                  <th>ITEM CODE</th>
-                  <th>BOX</th>
-                  <th>UNIT PER BOX</th>
-                  <th>TOTAL QTY</th>
-                  <th>DESCRIPTION</th>
-                  <th>UNIT PRICE (Excl Vat)</th>
-                  <th>VAT</th>
-                  <th>UNIT PRICE (Incl Vat)</th>
-                  <th>TOTAL AMOUNT (Incl Vat)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.length === 0 && (
-                  <tr>
-                    <td colSpan={10} style={{ fontSize: 12 }}>
-                      No items recorded for this invoice.
-                    </td>
+                return (
+                  <tr key={r.id}>
+                    <td>{idx + 1}</td>
+                    <td>{r.products?.item_code || ""}</td>
+                    <td>{boxQty}</td>
+                    <td>{unitsPerBox}</td>
+                    <td>{totalQty}</td>
+                    <td>{r.products?.name || ""}</td>
+                    <td style={{ textAlign: "right" }}>{unitEx.toFixed(2)}</td>
+                    <td style={{ textAlign: "right" }}>{unitVat.toFixed(2)}</td>
+                    <td style={{ textAlign: "right" }}>{unitIncl.toFixed(2)}</td>
+                    <td style={{ textAlign: "right" }}>{lineTotal.toFixed(2)}</td>
                   </tr>
-                )}
-                {items.map((row, idx) => {
-                  const qty = row.total_qty ?? 0;
-                  const unitEx = row.unit_price_excl_vat ?? 0;
-                  const unitVat = row.unit_vat ?? 0;
-                  const unitIncl = unitEx + unitVat;
-                  const totalIncl = unitIncl * qty;
+                );
+              })}
+              {items.length === 0 ? (
+                <tr>
+                  <td colSpan={10} style={{ textAlign: "center", padding: 14 }}>
+                    No items
+                  </td>
+                </tr>
+              ) : null}
+            </>
+          }
+          totals={[
+            { label: "SUB TOTAL", value: computed.subtotal.toFixed(2) },
+            { label: "VAT 15%", value: computed.vatAmount.toFixed(2) },
+            { label: "TOTAL AMOUNT", value: computed.totalAmount.toFixed(2) },
+            { label: "PREVIOUS BALANCE", value: computed.previousBalance.toFixed(2) },
+            { label: "GROSS TOTAL", value: computed.grossTotal.toFixed(2) },
+            { label: "AMOUNT PAID", value: computed.amountPaid.toFixed(2) },
+            { label: "BALANCE REMAINING", value: computed.balanceRemaining.toFixed(2) },
+          ]}
+          footerLeft="Prepared by: __________"
+          footerMiddle="Delivered by: __________"
+          footerRight="Customer Signature"
+        />
 
-                  const itemCode = row.products?.item_code || "";
-                  const desc = row.products?.name || "";
-
-                  return (
-                    <tr key={row.id}>
-                      <td>{idx + 1}</td>
-                      <td>{itemCode}</td>
-                      <td>{row.box_qty ?? 0}</td>
-                      <td>{row.units_per_box ?? 0}</td>
-                      <td>{qty}</td>
-                      <td>{desc}</td>
-                      <td>{unitEx.toFixed(2)}</td>
-                      <td>{unitVat.toFixed(2)}</td>
-                      <td>{unitIncl.toFixed(2)}</td>
-                      <td>{totalIncl.toFixed(2)}</td>
+        {/* Linked credit notes quick table (kept outside the printed doc if you want) */}
+        <div className="print-hidden" style={{ maxWidth: 820, margin: "12px auto 40px" }}>
+          <div className="card">
+            <div className="panel-title">Credit Notes linked to this invoice</div>
+            {cnLoading ? (
+              <p style={{ marginTop: 8 }}>Loading…</p>
+            ) : cnError ? (
+              <p style={{ marginTop: 8, color: "#b91c1c" }}>{cnError}</p>
+            ) : creditNotes.length === 0 ? (
+              <p style={{ marginTop: 8, opacity: 0.8 }}>No credit notes linked.</p>
+            ) : (
+              <div style={{ overflowX: "auto", marginTop: 10 }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>No</th>
+                      <th>Date</th>
+                      <th>Total</th>
+                      <th>Status</th>
+                      <th></th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </section>
-
-          {/* NOTES + TOTALS */}
-          <section className="rp-invoice-bottom-grid">
-            <div className="rp-invoice-notes">
-              <div className="rp-invoice-notes-title">Note:</div>
-              <ul>
-                <li>Goods once sold cannot be returned or exchanged.</li>
-                <li>
-                  For any other manufacturing defects, must provide this invoice
-                  for a refund or exchange.
-                </li>
-                <li>
-                  Customer must verify that the quantity of goods conforms with
-                  their invoice; otherwise, we will not be responsible after
-                  delivery.
-                </li>
-                <li>
-                  Interest of 1% above the bank rate will be charged on sum due
-                  if not settled within 30 days.
-                </li>
-                <li>All cheques to be issued on RAM POTTERY LTD.</li>
-                <li>
-                  Bank transfer to <strong>000 44 570 46 59 MCB Bank</strong>
-                </li>
-              </ul>
-            </div>
-
-            <div className="rp-invoice-totals">
-              <div className="rp-invoice-field-row">
-                <label>Discount %</label>
-                <input
-                  disabled
-                  value={discountPercent.toFixed(2)}
-                  className="rp-input-plain"
-                />
+                  </thead>
+                  <tbody>
+                    {creditNotes.map((cn) => (
+                      <tr key={cn.id}>
+                        <td>{cn.credit_note_number || `#${cn.id}`}</td>
+                        <td>{cn.credit_note_date ? new Date(cn.credit_note_date).toLocaleDateString("en-GB") : "—"}</td>
+                        <td>{Number(cn.total_amount || 0).toFixed(2)}</td>
+                        <td>{String(cn.status || "—").toUpperCase()}</td>
+                        <td>
+                          <button className="btn btn-ghost" onClick={() => router.push(`/credit-notes/${cn.id}`)}>
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="rp-invoice-field-row">
-                <label>Discount Amount (Rs)</label>
-                <input
-                  disabled
-                  value={discountAmount.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>SUB TOTAL</label>
-                <input
-                  disabled
-                  value={subtotal.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>VAT 15%</label>
-                <input
-                  disabled
-                  value={vatAmount.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>TOTAL AMOUNT</label>
-                <input
-                  disabled
-                  value={totalAmount.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>PREVIOUS BALANCE</label>
-                <input
-                  disabled
-                  value={previousBalance.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>GROSS TOTAL</label>
-                <input
-                  disabled
-                  value={grossTotal.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>AMOUNT PAID</label>
-                <input
-                  disabled
-                  value={amountPaid.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-              <div className="rp-invoice-field-row">
-                <label>BALANCE REMAINING</label>
-                <input
-                  disabled
-                  value={balanceRemaining.toFixed(2)}
-                  className="rp-input-plain"
-                />
-              </div>
-            </div>
-          </section>
-
-          {/* SIGNATURES + FOOTLINE */}
-          <section className="rp-invoice-signatures">
-            <div>
-              <div className="sig-line" />
-              <div className="sig-label">Signature – Prepared by: Manish</div>
-            </div>
-            <div>
-              <div className="sig-line" />
-              <div className="sig-label">Signature – Delivered by:</div>
-            </div>
-            <div>
-              <div className="sig-line" />
-              <div className="sig-label">
-                Customer Signature – Customer Name:
-              </div>
-            </div>
-          </section>
-
-          <div className="rp-invoice-footer-bar">
-            We thank you for your purchase and look forward to being of service
-            to you again
+            )}
           </div>
         </div>
       </main>
