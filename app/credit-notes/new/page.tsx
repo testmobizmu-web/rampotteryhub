@@ -1,4 +1,3 @@
-// app/credit-notes/new/page.tsx
 import { Suspense } from "react";
 import CreditNoteNewClient from "./CreditNoteNewClient";
 
@@ -11,4 +10,3 @@ export default function NewCreditNotePage() {
     </Suspense>
   );
 }
-

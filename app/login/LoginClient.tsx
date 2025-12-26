@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export default function LoginClient() {
@@ -9,15 +9,25 @@ export default function LoginClient() {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /* =====================
+     REMEMBER USERNAME
+  ===================== */
   useEffect(() => {
-    // Example: /login?next=/admin/users
-    const next = searchParams.get("next");
-    if (next) {
-      // optional: store next somewhere if you want
-    }
+    const saved = localStorage.getItem("rp_remember_username");
+    if (saved) setUsername(saved);
+  }, []);
+
+  const nextPath = useMemo(() => {
+    const rt = searchParams.get("returnTo");
+    const nx = searchParams.get("next");
+    const candidate = rt || nx || "/";
+    if (!candidate.startsWith("/") || candidate.startsWith("//")) return "/";
+    return candidate;
   }, [searchParams]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -26,25 +36,25 @@ export default function LoginClient() {
     setError(null);
 
     try {
-      const res = await fetch("/api/login", {
+      const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
 
-      const json = await res.json().catch(() => ({}));
+      const json = await res.json();
 
       if (!res.ok || !json.ok) {
         throw new Error(json.error || "Invalid username or password");
       }
 
-      // Save also to localStorage if your sidebar reads it
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("rp_user", JSON.stringify(json.session));
+      if (remember) {
+        localStorage.setItem("rp_remember_username", username);
+      } else {
+        localStorage.removeItem("rp_remember_username");
       }
 
-      const next = searchParams.get("next") || "/";
-      router.push(next);
+      router.replace(nextPath);
     } catch (err: any) {
       setError(err.message || "Login failed");
     } finally {
@@ -55,8 +65,20 @@ export default function LoginClient() {
   return (
     <div className="rp-login-wrap">
       <div className="rp-login-card">
-        <h1 className="rp-login-title">RamPotteryHub</h1>
-        <p className="rp-login-sub">Secure access • Admin & Staff</p>
+        {/* LOGO HEADER */}
+        <div className="rp-login-top">
+          <div className="rp-login-logo-bg">
+            <img
+              src="/images/logo/logo.png"
+              alt="Ram Pottery Ltd"
+              width={44}
+              height={44}
+            />
+          </div>
+
+          <h1 className="rp-login-title">RamPotteryHub</h1>
+          <p className="rp-login-sub">Secure access • Admin & Staff</p>
+        </div>
 
         <form onSubmit={handleSubmit} className="rp-login-form">
           <label className="rp-field">
@@ -64,7 +86,6 @@ export default function LoginClient() {
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="admin"
               autoComplete="username"
             />
           </label>
@@ -72,17 +93,36 @@ export default function LoginClient() {
           <label className="rp-field">
             <span>Password</span>
             <input
-              type="password"
+              type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
               autoComplete="current-password"
             />
           </label>
 
+          <div className="rp-login-options">
+            <label>
+              <input
+                type="checkbox"
+                checked={showPassword}
+                onChange={() => setShowPassword(!showPassword)}
+              />{" "}
+              Show password
+            </label>
+
+            <label>
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={() => setRemember(!remember)}
+              />{" "}
+              Remember username
+            </label>
+          </div>
+
           {error && <div className="rp-login-error">{error}</div>}
 
-          <button className="btn-primary-red" disabled={loading} type="submit">
+          <button className="btn-primary-red" disabled={loading}>
             {loading ? "Signing in…" : "Sign in"}
           </button>
         </form>

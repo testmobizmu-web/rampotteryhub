@@ -7,6 +7,11 @@ function nextCN(lastId: number | null) {
   return "CN-" + String(next).padStart(4, "0");
 }
 
+function toNumber(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -29,6 +34,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 1) Generate credit note number
     const { data: last, error: lastErr } = await supabase
       .from("credit_notes")
       .select("id")
@@ -40,6 +46,7 @@ export async function POST(req: NextRequest) {
 
     const creditNoteNumber = nextCN(last?.id ?? null);
 
+    // 2) Insert credit note
     const { data: cn, error: cnErr } = await supabase
       .from("credit_notes")
       .insert({
@@ -53,13 +60,14 @@ export async function POST(req: NextRequest) {
         total_amount: totalAmount,
         status: "ISSUED",
       })
-      .select("id")
+      .select("id, credit_note_number")
       .single();
 
     if (cnErr || !cn) throw cnErr;
 
     const creditNoteId = cn.id;
 
+    // 3) Insert credit note items
     const itemsToInsert = items.map((it: any) => ({
       credit_note_id: creditNoteId,
       product_id: it.product_id ?? null,
@@ -74,7 +82,44 @@ export async function POST(req: NextRequest) {
       .from("credit_note_items")
       .insert(itemsToInsert);
 
-    if (itErr) throw itErr;
+    if (itErr) {
+      // rollback credit note if items insert fails
+      await supabase.from("credit_notes").delete().eq("id", creditNoteId);
+      throw itErr;
+    }
+
+    // 4) AUTO STOCK MOVEMENTS (IN) — credit note returns stock
+    // DB rule: quantity must be > 0; movement_type must be IN|OUT|ADJUSTMENT
+    const movementsToInsert = items
+      .map((it: any) => {
+        const pid = Number(it.product_id);
+        const qty = Math.abs(toNumber(it.total_qty));
+        if (!pid || qty <= 0) return null;
+
+        return {
+          product_id: pid,
+          movement_type: "IN",
+          quantity: qty,
+          reference: cn.credit_note_number, // audit reference
+          source_table: "credit_notes",
+          source_id: creditNoteId,
+          notes: reason || "Credit note issued",
+        };
+      })
+      .filter(Boolean) as any[];
+
+    if (movementsToInsert.length) {
+      const { error: mvErr } = await supabase
+        .from("stock_movements")
+        .insert(movementsToInsert);
+
+      if (mvErr) {
+        // rollback everything for safety
+        await supabase.from("credit_note_items").delete().eq("credit_note_id", creditNoteId);
+        await supabase.from("credit_notes").delete().eq("id", creditNoteId);
+        throw mvErr;
+      }
+    }
 
     return NextResponse.json({ ok: true, creditNoteId });
   } catch (err: any) {
@@ -85,3 +130,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

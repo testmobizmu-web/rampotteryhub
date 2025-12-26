@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import Link from "next/link";
 
 /* ========= Types ========= */
 
@@ -21,15 +22,6 @@ type UserRow = {
   is_active: boolean;
 };
 
-type SidebarActive =
-  | "dashboard"
-  | "invoices"
-  | "stock"
-  | "customers"
-  | "suppliers"
-  | "reports"
-  | "adminUsers";
-
 /* ========= Page ========= */
 
 export default function AdminUsersPage() {
@@ -39,208 +31,222 @@ export default function AdminUsersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // form state
+  // form
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [formUsername, setFormUsername] = useState("");
-  const [formPassword, setFormPassword] = useState("");
-  const [formRole, setFormRole] = useState<"admin" | "staff">("staff");
-  const [permEditStock, setPermEditStock] = useState(true);
-  const [permViewReports, setPermViewReports] = useState(true);
-  const [permManageUsers, setPermManageUsers] = useState(false);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<"admin" | "staff">("staff");
+  const [permStock, setPermStock] = useState(true);
+  const [permReports, setPermReports] = useState(true);
+  const [permUsers, setPermUsers] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  /* ---- Load users from API ---- */
+  // mobile drawer
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  /* ========= Effects ========= */
 
   useEffect(() => {
-    async function loadUsers() {
-      try {
-        setLoading(true);
-        setError(null);
+    document.body.style.overflow = mobileNavOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileNavOpen]);
 
-        const res = await fetch("/api/admin/users");
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(txt || "Failed to load users");
-        }
-        const json = await res.json();
-        setUsers(json.users ?? json ?? []);
-      } catch (err: any) {
-        console.error(err);
-        setError(err.message || "Error loading users");
-      } finally {
-        setLoading(false);
-      }
-    }
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setMobileNavOpen(false);
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, []);
 
+  useEffect(() => {
     loadUsers();
   }, []);
 
-  /* ---- Helpers ---- */
+  /* ========= API ========= */
 
-  function resetFormToNew() {
+  async function loadUsers() {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/admin/users");
+      if (!res.ok) throw new Error(await res.text());
+      const json = await res.json();
+      setUsers(json.users ?? json ?? []);
+    } catch (e: any) {
+      setError(e.message || "Failed to load users");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function resetForm() {
     setEditingId(null);
-    setFormUsername("");
-    setFormPassword("");
-    setFormRole("staff");
-    setPermEditStock(true);
-    setPermViewReports(true);
-    setPermManageUsers(false);
+    setUsername("");
+    setPassword("");
+    setRole("staff");
+    setPermStock(true);
+    setPermReports(true);
+    setPermUsers(false);
     setIsActive(true);
   }
 
-  function fillFormFromUser(u: UserRow) {
+  function editUser(u: UserRow) {
     setEditingId(u.id);
-    setFormUsername(u.username);
-    setFormPassword("");
-    setFormRole(u.role);
-    setPermEditStock(!!u.permissions?.canEditStock);
-    setPermViewReports(!!u.permissions?.canViewReports);
-    setPermManageUsers(!!u.permissions?.canManageUsers);
+    setUsername(u.username);
+    setPassword("");
+    setRole(u.role);
+    setPermStock(!!u.permissions?.canEditStock);
+    setPermReports(!!u.permissions?.canViewReports);
+    setPermUsers(!!u.permissions?.canManageUsers);
     setIsActive(u.is_active);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  /* ---- Submit create / update ---- */
-
-  async function handleSubmit(e: React.FormEvent) {
+  async function saveUser(e: React.FormEvent) {
     e.preventDefault();
-    if (!formUsername.trim()) return;
+    if (!username.trim()) return;
 
     setSubmitting(true);
     setError(null);
 
-    const body: any = {
-      username: formUsername.trim(),
-      role: formRole,
+    const payload: any = {
+      username: username.trim(),
+      role,
       is_active: isActive,
       permissions: {
-        canEditStock: permEditStock,
-        canViewReports: permViewReports,
-        canManageUsers: permManageUsers,
+        canEditStock: permStock,
+        canViewReports: permReports,
+        canManageUsers: permUsers,
       },
     };
 
-    // only send password when creating or when user typed one
-    if (!editingId || formPassword.trim()) {
-      body.password = formPassword.trim();
-    }
+    if (!editingId || password.trim()) payload.password = password.trim();
 
     try {
       const res = await fetch("/api/admin/users", {
         method: editingId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          editingId ? { id: editingId, ...body } : body
-        ),
+        body: JSON.stringify(editingId ? { id: editingId, ...payload } : payload),
       });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || "Failed to save user");
-      }
-
-      // update list
+      if (!res.ok) throw new Error(await res.text());
       const updated = await res.json();
       setUsers(updated.users ?? updated ?? []);
-      resetFormToNew();
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Error saving user");
+      resetForm();
+    } catch (e: any) {
+      setError(e.message || "Save failed");
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function handleDeactivate(id: number) {
-    if (!confirm("Deactivate this user? They will not be able to log in.")) {
-      return;
-    }
-    setSubmitting(true);
-    setError(null);
-
-    try {
-      const res = await fetch("/api/admin/users", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, is_active: false }),
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || "Failed to deactivate user");
-      }
-
-      const updated = await res.json();
-      setUsers(updated.users ?? updated ?? []);
-      if (editingId === id) resetFormToNew();
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Error deactivating user");
-    } finally {
-      setSubmitting(false);
-    }
+  async function deactivateUser(id: number) {
+    if (!confirm("Deactivate this user?")) return;
+    await fetch("/api/admin/users", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, is_active: false }),
+    });
+    loadUsers();
   }
+
+  /* ========= Sidebar ========= */
+
+  const Side = (
+    <div className="rp-side-card rp-card-anim">
+      <div className="rp-brand">
+        <div className="rp-brand-logo">
+          <Image src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} />
+        </div>
+        <div className="rp-brand-text">
+          <div className="rp-brand-title">Ram Pottery Ltd</div>
+          <div className="rp-brand-sub">Accounting & Stock Manager</div>
+        </div>
+      </div>
+
+      <nav className="rp-nav">
+        <Link className="rp-nav-btn" href="/">Dashboard</Link>
+        <Link className="rp-nav-btn" href="/invoices">Invoices</Link>
+        <Link className="rp-nav-btn" href="/credit-notes">Credit Notes</Link>
+        <Link className="rp-nav-btn" href="/products">Stock & Categories</Link>
+        <Link className="rp-nav-btn" href="/customers">Customers</Link>
+        <Link className="rp-nav-btn" href="/suppliers">Suppliers</Link>
+        <Link className="rp-nav-btn" href="/reports">Reports</Link>
+        <Link className="rp-nav-btn rp-nav-btn--active" href="/admin/users">
+          Users & Permissions
+        </Link>
+      </nav>
+
+      <div className="rp-side-footer">
+        <div className="rp-role">
+          <span>Module</span>
+          <b>Administration</b>
+        </div>
+      </div>
+    </div>
+  );
 
   /* ========= UI ========= */
 
   return (
     <div className="rp-app">
-      {/* SIDEBAR */}
-      <aside className="rp-sidebar">
-        <SidebarContent router={useRouter()} active="adminUsers" />
-      </aside>
+      <div className="rp-bg" aria-hidden>
+        <span className="rp-bg-orb rp-bg-orb--1" />
+        <span className="rp-bg-orb rp-bg-orb--2" />
+        <span className="rp-bg-orb rp-bg-orb--3" />
+        <span className="rp-bg-grid" />
+      </div>
 
-      {/* MAIN */}
-      <main className="dashboard-main">
-        <div className="dashboard-inner admin-users-page">
-          <div className="dashboard-header">
-            <div>
-              <h1 className="admin-users-title">Admin – Users &amp; Permissions</h1>
-              <p className="admin-users-subtitle">
-                Create staff logins, assign roles, and control who can manage
-                stock and reports.
-              </p>
-            </div>
-            <div className="dashboard-header-right">
-              <button
-                type="button"
-                className="admin-btn admin-btn-primary"
-                onClick={resetFormToNew}
-              >
-                + New User
-              </button>
+      {/* Mobile top */}
+      <div className="rp-mtop">
+        <button className="rp-icon-btn" onClick={() => setMobileNavOpen(true)}>
+          <span className="rp-burger"><i /><i /><i /></span>
+        </button>
+        <div className="rp-mtop-brand">
+          <div className="rp-mtop-title">Users & Permissions</div>
+          <div className="rp-mtop-sub">Admin control</div>
+        </div>
+        <button className="rp-icon-btn" onClick={() => router.push("/")}>⌂</button>
+      </div>
+
+      <div className={`rp-overlay ${mobileNavOpen ? "is-open" : ""}`} onClick={() => setMobileNavOpen(false)} />
+      <div className={`rp-drawer ${mobileNavOpen ? "is-open" : ""}`}>
+        <div className="rp-drawer-head">
+          <strong>Menu</strong>
+          <button className="rp-icon-btn" onClick={() => setMobileNavOpen(false)}>✕</button>
+        </div>
+        {Side}
+      </div>
+
+      <div className="rp-shell rp-enter">
+        <aside className="rp-side">{Side}</aside>
+
+        <main className="rp-main">
+          {/* Header */}
+          <div className="rp-top rp-card-anim">
+            <div className="rp-title">
+              <div className="rp-eyebrow">
+                <span className="rp-tag">Admin</span>
+                <span className="rp-tag">Security</span>
+              </div>
+              <h1>Users & Permissions</h1>
+              <p>Create staff accounts and control access</p>
             </div>
           </div>
 
-          {error && (
-            <p style={{ color: "#b91c1c", fontSize: 13, marginBottom: 10 }}>
-              {error}
-            </p>
-          )}
+          {error && <div className="rp-alert rp-alert--danger">{error}</div>}
 
-          {/* GRID: existing users + form */}
-          <div className="admin-users-grid">
-            {/* LEFT – Existing users */}
-            <div className="admin-card">
-              <h2
-                style={{
-                  fontSize: "0.9rem",
-                  margin: 0,
-                  marginBottom: "0.9rem",
-                }}
-              >
-                Existing Users
-              </h2>
-
-              {loading ? (
-                <p style={{ fontSize: 12 }}>Loading users…</p>
-              ) : users.length === 0 ? (
-                <p style={{ fontSize: 12 }}>No users found.</p>
-              ) : (
-                <table>
+          {/* GRID */}
+          <section className="rp-grid rp-card-anim">
+            {/* Users list */}
+            <div className="rp-card rp-glass">
+              <div className="rp-card-head">
+                <div className="rp-card-title">Existing Users</div>
+              </div>
+              <div className="rp-table-wrap">
+                <table className="rp-table">
                   <thead>
                     <tr>
-                      <th>ID</th>
                       <th>Username</th>
                       <th>Role</th>
                       <th>Permissions</th>
@@ -249,47 +255,26 @@ export default function AdminUsersPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((u) => (
+                    {loading ? (
+                      <tr><td colSpan={5} className="rp-td-empty">Loading…</td></tr>
+                    ) : users.map(u => (
                       <tr key={u.id}>
-                        <td>{u.id}</td>
-                        <td>{u.username}</td>
+                        <td className="rp-strong">{u.username}</td>
+                        <td><span className="rp-pill">{u.role}</span></td>
                         <td>
-                          <span className="admin-pill admin-pill-role">
-                            {u.role}
-                          </span>
-                        </td>
-                        <td style={{ fontSize: 11 }}>
-                          {u.permissions?.canEditStock ? "Stock " : ""}
-                          {u.permissions?.canViewReports ? "Reports " : ""}
-                          {u.permissions?.canManageUsers ? "Users " : ""}
+                          {u.permissions?.canEditStock && "Stock "}
+                          {u.permissions?.canViewReports && "Reports "}
+                          {u.permissions?.canManageUsers && "Users"}
                         </td>
                         <td>
-                          <span
-                            className={
-                              "admin-pill " +
-                              (u.is_active
-                                ? "admin-pill-status-active"
-                                : "admin-pill-status-inactive")
-                            }
-                          >
+                          <span className={`rp-pill ${u.is_active ? "" : "rp-pill--danger"}`}>
                             {u.is_active ? "Active" : "Inactive"}
                           </span>
                         </td>
                         <td>
-                          <button
-                            type="button"
-                            className="admin-btn admin-btn-ghost"
-                            onClick={() => fillFormFromUser(u)}
-                          >
-                            Edit
-                          </button>
+                          <button className="rp-link-btn" onClick={() => editUser(u)}>Edit</button>
                           {u.is_active && (
-                            <button
-                              type="button"
-                              className="admin-btn admin-btn-danger"
-                              style={{ marginLeft: 6 }}
-                              onClick={() => handleDeactivate(u.id)}
-                            >
+                            <button className="rp-link-btn" onClick={() => deactivateUser(u.id)}>
                               Deactivate
                             </button>
                           )}
@@ -298,286 +283,64 @@ export default function AdminUsersPage() {
                     ))}
                   </tbody>
                 </table>
-              )}
+              </div>
             </div>
 
-            {/* RIGHT – Create / edit user */}
-            <div className="admin-card">
-              <h2
-                style={{
-                  fontSize: "0.9rem",
-                  margin: 0,
-                  marginBottom: "0.9rem",
-                }}
-              >
-                {editingId ? "Edit User" : "New User"}
-              </h2>
+            {/* Form */}
+            <div className="rp-card rp-glass">
+              <div className="rp-card-head">
+                <div className="rp-card-title">{editingId ? "Edit User" : "New User"}</div>
+              </div>
 
-              <form onSubmit={handleSubmit}>
-                {/* Username */}
-                <div>
-                  <div className="admin-field-label">Username</div>
-                  <input
-                    className="admin-input"
-                    value={formUsername}
-                    onChange={(e) => setFormUsername(e.target.value)}
-                    placeholder="e.g. stock.manager"
-                    required
-                  />
-                </div>
-
-                {/* Password */}
-                <div>
-                  <div className="admin-field-label">
-                    Password{" "}
-                    {editingId && (
-                      <span className="text-muted">
-                        (leave blank to keep current)
-                      </span>
-                    )}
+              <form className="rp-card-body" onSubmit={saveUser}>
+                <div className="rp-form-grid">
+                  <div>
+                    <div className="rp-label">Username</div>
+                    <input className="rp-input" value={username} onChange={e => setUsername(e.target.value)} />
                   </div>
-                  <input
-                    className="admin-input"
-                    type="password"
-                    value={formPassword}
-                    onChange={(e) => setFormPassword(e.target.value)}
-                    placeholder={
-                      editingId ? "•••••• (unchanged if empty)" : "Set a password"
-                    }
-                  />
-                </div>
 
-                {/* Role */}
-                <div>
-                  <div className="admin-field-label">Role</div>
-                  <select
-                    className="admin-select"
-                    value={formRole}
-                    onChange={(e) =>
-                      setFormRole(e.target.value as "admin" | "staff")
-                    }
-                  >
-                    <option value="staff">Staff</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                </div>
+                  <div>
+                    <div className="rp-label">Password</div>
+                    <input className="rp-input" type="password" value={password} onChange={e => setPassword(e.target.value)} />
+                  </div>
 
-                {/* Permissions */}
-                <div>
-                  <div className="admin-field-label">Permissions</div>
-                  <div className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={permEditStock}
-                      onChange={(e) => setPermEditStock(e.target.checked)}
-                    />
-                    <span>Can edit stock &amp; products</span>
-                  </div>
-                  <div className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={permViewReports}
-                      onChange={(e) => setPermViewReports(e.target.checked)}
-                    />
-                    <span>Can view reports &amp; statements</span>
-                  </div>
-                  <div className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={permManageUsers}
-                      onChange={(e) => setPermManageUsers(e.target.checked)}
-                    />
-                    <span>Can manage users</span>
+                  <div>
+                    <div className="rp-label">Role</div>
+                    <select className="rp-input" value={role} onChange={e => setRole(e.target.value as any)}>
+                      <option value="staff">Staff</option>
+                      <option value="admin">Admin</option>
+                    </select>
                   </div>
                 </div>
 
-                {/* Status */}
-                <div>
-                  <div className="admin-field-label">Status</div>
-                  <div className="admin-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={isActive}
-                      onChange={(e) => setIsActive(e.target.checked)}
-                    />
-                    <span>Active (can log in)</span>
-                  </div>
+                <div className="rp-seg" style={{ marginTop: 10 }}>
+                  <label className="rp-check"><input type="checkbox" checked={permStock} onChange={e => setPermStock(e.target.checked)} /> Stock</label>
+                  <label className="rp-check"><input type="checkbox" checked={permReports} onChange={e => setPermReports(e.target.checked)} /> Reports</label>
+                  <label className="rp-check"><input type="checkbox" checked={permUsers} onChange={e => setPermUsers(e.target.checked)} /> Users</label>
                 </div>
 
-                {/* Buttons */}
-                <div style={{ marginTop: 4 }}>
-                  <button
-                    type="submit"
-                    className="admin-btn admin-btn-primary"
-                    disabled={submitting}
-                  >
+                <label className="rp-check" style={{ marginTop: 10 }}>
+                  <input type="checkbox" checked={isActive} onChange={e => setIsActive(e.target.checked)} />
+                  Active
+                </label>
+
+                <div style={{ marginTop: 12 }}>
+                  <button className="rp-seg-item rp-seg-item--primary" disabled={submitting}>
                     {editingId ? "Save Changes" : "Create User"}
                   </button>
                   {editingId && (
-                    <button
-                      type="button"
-                      className="admin-btn admin-btn-outline"
-                      style={{ marginLeft: 8 }}
-                      onClick={resetFormToNew}
-                    >
+                    <button type="button" className="rp-link-btn" onClick={resetForm}>
                       Cancel
                     </button>
                   )}
                 </div>
               </form>
             </div>
-          </div>
-        </div>
-      </main>
+          </section>
+
+          <footer className="rp-footer">© 2025 Ram Pottery Ltd • MoBiz.mu</footer>
+        </main>
+      </div>
     </div>
-  );
-}
-
-/* ========= Sidebar (same style as dashboard) ========= */
-
-type SidebarProps = {
-  router: ReturnType<typeof useRouter>;
-  active: SidebarActive;
-};
-
-function SidebarContent({ router, active }: SidebarProps) {
-  const [canEditStock, setCanEditStock] = useState(true);
-  const [canViewReports, setCanViewReports] = useState(true);
-  const [canManageUsers, setCanManageUsers] = useState(true);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem("rp_user");
-    if (!raw) return;
-    try {
-      const user = JSON.parse(raw);
-      const perms = user.permissions || {};
-      const isAdmin = user.role === "admin";
-      setCanEditStock(isAdmin || !!perms.canEditStock);
-      setCanViewReports(isAdmin || !!perms.canViewReports);
-      setCanManageUsers(isAdmin || !!perms.canManageUsers);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  return (
-    <>
-      <div className="rp-sidebar-logo">
-        <Image
-          src="/images/logo/logo.png"
-          alt="Ram Pottery Logo"
-          width={34}
-          height={34}
-        />
-        <div>
-          <div className="rp-sidebar-logo-title">Ram Pottery Ltd</div>
-          <div className="rp-sidebar-logo-sub">
-            Online Accounting &amp; Stock Manager
-          </div>
-        </div>
-      </div>
-
-      <div className="rp-sidebar-nav">
-        <div className="rp-nav-section-title">Overview</div>
-        <button
-          className={
-            "rp-nav-item " +
-            (active === "dashboard" ? "rp-nav-item-active" : "")
-          }
-          onClick={() => router.push("/")}
-        >
-          <span>Dashboard</span>
-        </button>
-
-        <div className="rp-nav-section-title">Sales</div>
-        <button
-          className={
-            "rp-nav-item " +
-            (active === "invoices" ? "rp-nav-item-active" : "")
-          }
-          onClick={() => router.push("/invoices")}
-        >
-          <span>Invoices</span>
-        </button>
-
-        {canEditStock && (
-          <>
-            <div className="rp-nav-section-title">Stock</div>
-            <button
-              className={
-                "rp-nav-item " +
-                (active === "stock" ? "rp-nav-item-active" : "")
-              }
-              onClick={() => router.push("/stock")}
-            >
-              <span>Stock &amp; Categories</span>
-            </button>
-            <button
-              className="rp-nav-item"
-              onClick={() => router.push("/stock/movements")}
-            >
-              <span>Stock Movements</span>
-            </button>
-          </>
-        )}
-
-        <div className="rp-nav-section-title">Contacts</div>
-        <button
-          className={
-            "rp-nav-item " +
-            (active === "customers" ? "rp-nav-item-active" : "")
-          }
-          onClick={() => router.push("/customers")}
-        >
-          <span>Customers</span>
-        </button>
-        <button
-          className={
-            "rp-nav-item " +
-            (active === "suppliers" ? "rp-nav-item-active" : "")
-          }
-          onClick={() => router.push("/suppliers")}
-        >
-          <span>Suppliers</span>
-        </button>
-
-        {canViewReports && (
-          <>
-            <div className="rp-nav-section-title">Reports</div>
-            <button
-              className={
-                "rp-nav-item " +
-                (active === "reports" ? "rp-nav-item-active" : "")
-              }
-              onClick={() => router.push("/reports")}
-            >
-              <span>Reports &amp; Statements</span>
-            </button>
-          </>
-        )}
-
-        {canManageUsers && (
-          <>
-            <div className="rp-nav-section-title">Admin</div>
-            <button
-              className={
-                "rp-nav-item " +
-                (active === "adminUsers" ? "rp-nav-item-active" : "")
-              }
-              onClick={() => router.push("/admin/users")}
-            >
-              <span>Users &amp; Permissions</span>
-            </button>
-          </>
-        )}
-      </div>
-
-      <div className="rp-sidebar-footer">
-        Logged in as <strong>Admin</strong> • rampottery.mu
-        <br />
-        Secure cloud access &amp; testing included.
-      </div>
-    </>
   );
 }

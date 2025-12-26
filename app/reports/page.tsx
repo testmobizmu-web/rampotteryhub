@@ -2,6 +2,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
@@ -96,6 +97,27 @@ export default function ReportsPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ✅ Mobile drawer
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // lock background scroll when drawer is open
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.body.style.overflow = mobileNavOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileNavOpen]);
+
+  // close on ESC
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMobileNavOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -202,7 +224,12 @@ export default function ReportsPage() {
     return customers.find((c) => String(c.id) === filterCustomerId)?.name || "";
   }
 
-  function downloadCsv(filenameBase: string, summaryLines: any[][], header: string[], rows: any[][]) {
+  function downloadCsv(
+    filenameBase: string,
+    summaryLines: any[][],
+    header: string[],
+    rows: any[][]
+  ) {
     const filename = `${filenameBase}__${periodLabel()}.csv`
       .replace(/[\/\\:*?"<>|]/g, "-")
       .slice(0, 180);
@@ -235,8 +262,16 @@ export default function ReportsPage() {
     const summaryLines = [
       ["Report", "Commission Invoices"],
       ["Generated", ymd(new Date())],
-      ["Mode", commissionMode === "ALL" ? "PAID + UNPAID (Projection)" : "PAID only"],
-      ["Period", fromDate && toDate ? `${fromDate} to ${toDate} (to exclusive)` : month],
+      [
+        "Mode",
+        commissionMode === "ALL"
+          ? "PAID + UNPAID (Projection)"
+          : "PAID only",
+      ],
+      [
+        "Period",
+        fromDate && toDate ? `${fromDate} to ${toDate} (to exclusive)` : month,
+      ],
       ["Customer Filter", customerName || "All customers"],
       ["Sales Rep Filter", filterSalesRep || "All reps"],
       ["Commission %", commissionPercent || "0"],
@@ -399,313 +434,507 @@ export default function ReportsPage() {
     downloadCsv("sales_invoices__paid_only", summaryLines, header, rows);
   }
 
+  function formatDateGB(dateStr: string) {
+    // invoices sometimes are "YYYY-MM-DD" which is safe to display raw; still format if possible
+    const d = new Date(dateStr);
+    return Number.isNaN(d.getTime()) ? dateStr : d.toLocaleDateString("en-GB");
+  }
+
+  const SideContent = (
+    <div className="rp-side-card rp-card-anim">
+      <div className="rp-brand">
+        <div className="rp-brand-logo">
+          <Image
+            src="/images/logo/logo.png"
+            alt="Ram Pottery Ltd"
+            width={44}
+            height={44}
+            priority
+            style={{ width: 44, height: 44, objectFit: "contain" }}
+          />
+        </div>
+        <div className="rp-brand-text">
+          <div className="rp-brand-title">Ram Pottery Ltd</div>
+          <div className="rp-brand-sub">Online Accounting & Stock Manager</div>
+        </div>
+      </div>
+
+      <nav className="rp-nav">
+        <Link className="rp-nav-btn" href="/" onClick={() => setMobileNavOpen(false)}>
+          Dashboard
+        </Link>
+        <Link className="rp-nav-btn" href="/invoices" onClick={() => setMobileNavOpen(false)}>
+          Invoices
+        </Link>
+        <Link className="rp-nav-btn" href="/credit-notes" onClick={() => setMobileNavOpen(false)}>
+          Credit Notes
+        </Link>
+        <Link className="rp-nav-btn" href="/products" onClick={() => setMobileNavOpen(false)}>
+          Stock & Categories
+        </Link>
+        <Link className="rp-nav-btn" href="/stock-movements" onClick={() => setMobileNavOpen(false)}>
+          Stock Movements
+        </Link>
+        <Link className="rp-nav-btn" href="/customers" onClick={() => setMobileNavOpen(false)}>
+          Customers
+        </Link>
+        <Link className="rp-nav-btn" href="/suppliers" onClick={() => setMobileNavOpen(false)}>
+          Suppliers
+        </Link>
+        <Link
+          className="rp-nav-btn rp-nav-btn--active"
+          href="/reports"
+          onClick={() => setMobileNavOpen(false)}
+        >
+          Reports & Statements
+        </Link>
+        <Link className="rp-nav-btn" href="/admin/users" onClick={() => setMobileNavOpen(false)}>
+          Users & Permissions
+        </Link>
+      </nav>
+
+      <div className="rp-side-footer">
+        <div className="rp-role">
+          <span>Module</span>
+          <b>Reports</b>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="rp-app">
-      <aside className="rp-sidebar">
-        <div className="rp-sidebar-logo">
-          <Image src="/images/logo/logo.png" alt="Ram Pottery Logo" width={34} height={34} />
-          <div>
-            <div className="rp-sidebar-logo-title">Ram Pottery Ltd</div>
-            <div className="rp-sidebar-logo-sub">Online Accounting &amp; Stock Manager</div>
-          </div>
+      {/* Luxury animated background */}
+      <div className="rp-bg" aria-hidden="true">
+        <span className="rp-bg-orb rp-bg-orb--1" />
+        <span className="rp-bg-orb rp-bg-orb--2" />
+        <span className="rp-bg-orb rp-bg-orb--3" />
+        <span className="rp-bg-grid" />
+      </div>
+
+      {/* Mobile top bar */}
+      <div className="rp-mtop">
+        <button
+          className="rp-icon-btn"
+          type="button"
+          onClick={() => setMobileNavOpen(true)}
+          aria-label="Open menu"
+        >
+          <span className="rp-burger" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+        </button>
+
+        <div className="rp-mtop-brand">
+          <div className="rp-mtop-title">Reports</div>
+          <div className="rp-mtop-sub">VAT • Sales • Commission</div>
         </div>
 
-        <div className="rp-sidebar-nav">
-          <div className="rp-nav-section-title">Overview</div>
-          <button className="rp-nav-item" onClick={() => router.push("/")}>
-            <span>Dashboard</span>
-          </button>
+        <button className="rp-icon-btn" type="button" onClick={() => window.print()} aria-label="Print">
+          🖨
+        </button>
+      </div>
 
-          <div className="rp-nav-section-title">Sales</div>
-          <button className="rp-nav-item" onClick={() => router.push("/invoices")}>
-            <span>Invoices</span>
-          </button>
-
-          <div className="rp-nav-section-title">Reports</div>
-          <button className="rp-nav-item rp-nav-item-active" onClick={() => router.push("/reports")}>
-            <span>Reports &amp; Statements</span>
-          </button>
-        </div>
-
-        <div className="rp-sidebar-footer">Reports module • VAT + Sales • rampottery.mu</div>
-      </aside>
-
-      <main className="dashboard-main">
-        <div className="dashboard-inner">
-          <div className="dashboard-header">
+      {/* Mobile overlay + drawer */}
+      <div className={`rp-overlay ${mobileNavOpen ? "is-open" : ""}`} onClick={() => setMobileNavOpen(false)} />
+      <div className={`rp-drawer ${mobileNavOpen ? "is-open" : ""}`} role="dialog" aria-modal="true">
+        <div className="rp-drawer-head">
+          <div className="rp-drawer-brand">
+            <div className="rp-drawer-logo">
+              <Image src="/images/logo/logo.png" alt="Ram Pottery" width={34} height={34} />
+            </div>
             <div>
-              <h1 className="dashboard-title">Reports</h1>
-              <p className="dashboard-subtitle">
-                Export: Commission CSV + VAT CSV + Sales CSV (All vs Paid).
-              </p>
+              <div className="rp-drawer-title">Ram Pottery Ltd</div>
+              <div className="rp-drawer-sub">Secure • Cloud</div>
+            </div>
+          </div>
+
+          <button className="rp-icon-btn" type="button" onClick={() => setMobileNavOpen(false)} aria-label="Close">
+            ✕
+          </button>
+        </div>
+
+        {SideContent}
+      </div>
+
+      <div className="rp-shell rp-enter">
+        {/* Desktop sidebar */}
+        <aside className="rp-side">{SideContent}</aside>
+
+        {/* Main */}
+        <main className="rp-main">
+          {/* Header */}
+          <div className="rp-top rp-card-anim" style={{ animationDelay: "40ms" }}>
+            <div className="rp-title">
+              <div className="rp-eyebrow">
+                <span className="rp-tag">Secure • Cloud</span>
+                <span className="rp-tag">VAT 15%</span>
+                <span className="rp-tag">Export CSV</span>
+              </div>
+              <h1>Reports</h1>
+              <p>Export: Commission CSV + VAT CSV + Sales CSV (All vs Paid).</p>
             </div>
 
-            <div className="dashboard-header-right">
-              <div className="dashboard-quick-buttons">
-                <button className="primary" onClick={() => router.push("/invoices/new")}>
+            <div className="rp-top-right">
+              <div className="rp-seg" style={{ gap: 10 }}>
+                <button
+                  className="rp-seg-item rp-seg-item--primary"
+                  type="button"
+                  onClick={() => router.push("/invoices/new")}
+                >
                   + New Invoice
                 </button>
-                <button onClick={() => window.print()}>🖨 Print</button>
+
+                <button className="rp-seg-item" type="button" onClick={() => window.print()}>
+                  🖨 Print
+                </button>
+
+                <button
+                  className="rp-theme-btn"
+                  type="button"
+                  onClick={() => loadReports(month)}
+                  disabled={loading}
+                  style={{ minWidth: 118 }}
+                >
+                  {loading ? "Loading…" : "Refresh"}
+                </button>
               </div>
-              <div className="rp-user-badge">R</div>
             </div>
           </div>
 
           {/* Filters */}
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="form-row">
+          <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "90ms" }}>
+            <div className="rp-card-head">
               <div>
-                <label className="form-label">Select month (quick)</label>
-                <input
-                  type="month"
-                  className="form-input"
-                  value={month}
-                  onChange={(e) => setMonth(e.target.value)}
-                  disabled={!!(fromDate || toDate)}
-                />
+                <div className="rp-card-title">Filters</div>
+                <div className="rp-card-sub">
+                  Tip: after changing filters/range, click <b>Refresh</b>.
+                </div>
               </div>
-
-              <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
-                <button className="btn btn-primary" onClick={() => loadReports(month)} disabled={loading}>
-                  {loading ? "Loading…" : "Refresh"}
-                </button>
-                <button className="btn btn-ghost" onClick={() => router.push("/")}>
-                  ← Back
-                </button>
-              </div>
+              <span className="rp-soft-pill">
+                Period: <b>{fromDate && toDate ? `${fromDate} → ${toDate}` : month}</b>
+              </span>
             </div>
 
-            <div className="form-row" style={{ marginTop: 10 }}>
-              <div>
-                <label className="form-label">From (YYYY-MM-DD)</label>
-                <input type="date" className="form-input" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            <div className="rp-card-body">
+              <div className="rp-form-grid">
+                <div>
+                  <div className="rp-label">Select month (quick)</div>
+                  <input
+                    type="month"
+                    className="rp-input"
+                    value={month}
+                    onChange={(e) => setMonth(e.target.value)}
+                    disabled={!!(fromDate || toDate)}
+                  />
+                </div>
+
+                <div>
+                  <div className="rp-label">From (YYYY-MM-DD)</div>
+                  <input
+                    type="date"
+                    className="rp-input"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <div className="rp-label">To (exclusive end)</div>
+                  <input
+                    type="date"
+                    className="rp-input"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <div className="rp-label">Customer</div>
+                  <select
+                    className="rp-input"
+                    value={filterCustomerId}
+                    onChange={(e) => setFilterCustomerId(e.target.value)}
+                  >
+                    <option value="">All customers</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="rp-label">Sales Representative</div>
+                  <select
+                    className="rp-input"
+                    value={filterSalesRep}
+                    onChange={(e) => setFilterSalesRep(e.target.value)}
+                  >
+                    <option value="">All reps</option>
+                    {salesReps.map((rep) => (
+                      <option key={rep} value={rep}>
+                        {rep}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
+                  <button
+                    className="rp-link-btn"
+                    type="button"
+                    onClick={() => loadReports(month)}
+                    disabled={loading}
+                  >
+                    {loading ? "Loading…" : "Refresh"}
+                  </button>
+
+                  <button
+                    className="rp-link-btn"
+                    type="button"
+                    onClick={() => {
+                      setFromDate("");
+                      setToDate("");
+                      loadReports(month);
+                    }}
+                    disabled={loading}
+                  >
+                    Clear Range
+                  </button>
+
+                  <button
+                    className="rp-link-btn"
+                    type="button"
+                    onClick={() => {
+                      setFilterCustomerId("");
+                      setFilterSalesRep("");
+                    }}
+                    disabled={loading}
+                  >
+                    Clear Filters
+                  </button>
+                </div>
               </div>
 
-              <div>
-                <label className="form-label">To (exclusive end)</label>
-                <input type="date" className="form-input" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-              </div>
-
-              <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    setFromDate("");
-                    setToDate("");
-                    loadReports(month);
-                  }}
-                  disabled={loading}
+              {error ? (
+                <div
+                  className="rp-alert rp-alert--danger"
+                  style={{ marginTop: 12 }}
                 >
-                  Clear Range
-                </button>
-              </div>
+                  {error}
+                </div>
+              ) : null}
             </div>
+          </section>
 
-            <div className="form-row" style={{ marginTop: 10 }}>
+          {/* Commission + Export */}
+          <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "130ms" }}>
+            <div className="rp-card-head">
               <div>
-                <label className="form-label">Customer</label>
-                <select className="form-input" value={filterCustomerId} onChange={(e) => setFilterCustomerId(e.target.value)}>
-                  <option value="">All customers</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="rp-card-title">Commission Calculator</div>
+                <div className="rp-card-sub">Base = Subtotal excl VAT</div>
               </div>
 
-              <div>
-                <label className="form-label">Sales Representative</label>
-                <select className="form-input" value={filterSalesRep} onChange={(e) => setFilterSalesRep(e.target.value)}>
-                  <option value="">All reps</option>
-                  {salesReps.map((rep) => (
-                    <option key={rep} value={rep}>
-                      {rep}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    setFilterCustomerId("");
-                    setFilterSalesRep("");
-                  }}
-                  disabled={loading}
-                >
-                  Clear Filters
-                </button>
-              </div>
-            </div>
-
-            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 10 }}>
-              Tip: after changing filters, click <strong>Refresh</strong>.
-            </div>
-          </div>
-
-          {error && (
-            <p style={{ color: "#b91c1c", marginTop: 10, fontSize: 13 }}>
-              {error}
-            </p>
-          )}
-
-          {/* Commission + Export buttons */}
-          <div className="card" style={{ marginTop: 14 }}>
-            <div
-              className="panel-title"
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}
-            >
-              <span>Commission Calculator (Subtotal excl VAT)</span>
-
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button className="btn btn-ghost" onClick={exportSalesAllCsv} disabled={!sales || loading}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button className="rp-link-btn" type="button" onClick={exportSalesAllCsv} disabled={!sales || loading}>
                   ⬇ Export Sales CSV (ALL)
                 </button>
-                <button className="btn btn-ghost" onClick={exportSalesPaidCsv} disabled={!sales || loading}>
+                <button className="rp-link-btn" type="button" onClick={exportSalesPaidCsv} disabled={!sales || loading}>
                   ⬇ Export Sales CSV (PAID)
                 </button>
-                <button className="btn btn-primary" onClick={exportCommissionCsv} disabled={!sales || loading}>
+                <button className="rp-seg-item rp-seg-item--primary" type="button" onClick={exportCommissionCsv} disabled={!sales || loading}>
                   ⬇ Export Commission CSV
                 </button>
               </div>
             </div>
 
-            <div className="form-row" style={{ marginTop: 10 }}>
-              <div>
-                <label className="form-label">Commission Mode</label>
-                <select className="form-input" value={commissionMode} onChange={(e) => setCommissionMode(e.target.value as any)}>
-                  <option value="PAID_ONLY">PAID invoices only</option>
-                  <option value="ALL">PAID + UNPAID (Projection)</option>
-                </select>
-              </div>
+            <div className="rp-card-body">
+              <div className="rp-form-grid">
+                <div>
+                  <div className="rp-label">Commission Mode</div>
+                  <select
+                    className="rp-input"
+                    value={commissionMode}
+                    onChange={(e) => setCommissionMode(e.target.value as any)}
+                  >
+                    <option value="PAID_ONLY">PAID invoices only</option>
+                    <option value="ALL">PAID + UNPAID (Projection)</option>
+                  </select>
+                </div>
 
-              <div>
-                <label className="form-label">Commission %</label>
-                <input
-                  className="form-input"
-                  inputMode="decimal"
-                  placeholder="e.g. 5"
-                  value={commissionPercent}
-                  onChange={(e) => setCommissionPercent(e.target.value)}
-                />
-              </div>
+                <div>
+                  <div className="rp-label">Commission %</div>
+                  <input
+                    className="rp-input"
+                    inputMode="decimal"
+                    placeholder="e.g. 5"
+                    value={commissionPercent}
+                    onChange={(e) => setCommissionPercent(e.target.value)}
+                  />
+                </div>
 
-              <div>
-                <label className="form-label">
-                  Base ({commissionMode === "ALL" ? "All invoices" : "Paid invoices"})
-                </label>
-                <input className="form-input" value={`Rs ${commissionBase.toFixed(2)}  •  ${commissionInvoiceCount} invoices`} readOnly />
-              </div>
+                <div>
+                  <div className="rp-label">Base</div>
+                  <input
+                    className="rp-input"
+                    value={`Rs ${commissionBase.toFixed(2)}  •  ${commissionInvoiceCount} invoices`}
+                    readOnly
+                  />
+                </div>
 
-              <div>
-                <label className="form-label">Commission Amount</label>
-                <input className="form-input" value={`Rs ${commissionAmount.toFixed(2)}`} readOnly />
+                <div>
+                  <div className="rp-label">Commission Amount</div>
+                  <input className="rp-input" value={`Rs ${commissionAmount.toFixed(2)}`} readOnly />
+                </div>
               </div>
             </div>
-
-            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
-              Export buttons use the same filters/period you loaded in this page.
-            </div>
-          </div>
+          </section>
 
           {/* Tables */}
-          <section className="tables-grid" style={{ marginTop: 14 }}>
-            {/* Commission Table */}
-            <div className="table-card">
-              <div className="table-title">
-                Commission Invoices ({commissionMode === "ALL" ? "PAID + UNPAID" : "PAID only"})
+          <section className="rp-grid rp-card-anim" style={{ animationDelay: "170ms" }}>
+            {/* Commission invoices */}
+            <div className="rp-card rp-glass">
+              <div className="rp-card-head rp-card-head--tight">
+                <div>
+                  <div className="rp-card-title">
+                    Commission Invoices{" "}
+                    <span className="rp-muted" style={{ fontSize: 12, fontWeight: 900 }}>
+                      ({commissionMode === "ALL" ? "PAID + UNPAID" : "PAID only"})
+                    </span>
+                  </div>
+                  <div className="rp-card-sub">Click a row to open invoice</div>
+                </div>
               </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>No.</th>
-                    <th>Date</th>
-                    <th>Customer</th>
-                    <th>Sales Rep</th>
-                    <th style={{ textAlign: "right" }}>Subtotal (Excl VAT)</th>
-                    <th style={{ textAlign: "right" }}>Total (Incl VAT)</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {commissionInvoices.map((r) => (
-                    <tr key={r.id} onClick={() => router.push(`/invoices/${r.id}`)} style={{ cursor: "pointer" }}>
-                      <td>{r.invoice_number}</td>
-                      <td>{new Date(r.invoice_date).toLocaleDateString("en-GB")}</td>
-                      <td>{r.customer_name || "-"}</td>
-                      <td>{r.sales_rep || "—"}</td>
-                      <td style={{ textAlign: "right" }}>{Number(r.subtotal || 0).toFixed(2)}</td>
-                      <td style={{ textAlign: "right" }}>{Number(r.total_amount || 0).toFixed(2)}</td>
-                      <td>{String(r.status || "UNPAID").toUpperCase()}</td>
-                    </tr>
-                  ))}
-                  {!loading && sales && commissionInvoices.length === 0 && (
+
+              <div className="rp-table-wrap">
+                <table className="rp-table">
+                  <thead>
                     <tr>
-                      <td colSpan={7}>No invoices found for this selection.</td>
+                      <th>No.</th>
+                      <th>Date</th>
+                      <th>Customer</th>
+                      <th>Sales Rep</th>
+                      <th style={{ textAlign: "right" }}>Subtotal (Excl VAT)</th>
+                      <th style={{ textAlign: "right" }}>Total (Incl VAT)</th>
+                      <th>Status</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {(commissionInvoices || []).map((r) => (
+                      <tr
+                        key={r.id}
+                        onClick={() => router.push(`/invoices/${r.id}`)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <td className="rp-strong">{r.invoice_number}</td>
+                        <td>{formatDateGB(r.invoice_date)}</td>
+                        <td>{r.customer_name || "-"}</td>
+                        <td>{r.sales_rep || "—"}</td>
+                        <td style={{ textAlign: "right" }}>{Number(r.subtotal || 0).toFixed(2)}</td>
+                        <td style={{ textAlign: "right" }}>{Number(r.total_amount || 0).toFixed(2)}</td>
+                        <td>{String(r.status || "UNPAID").toUpperCase()}</td>
+                      </tr>
+                    ))}
+
+                    {!loading && sales && commissionInvoices.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="rp-td-empty">
+                          No invoices found for this selection.
+                        </td>
+                      </tr>
+                    )}
+
+                    {loading && (
+                      <tr>
+                        <td colSpan={7} className="rp-td-empty">
+                          Loading…
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
-            {/* VAT Table + Export */}
-            <div className="table-card">
-              <div
-                className="table-title"
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}
-              >
-                <span>VAT Report (Invoices)</span>
-                <button className="btn btn-ghost" onClick={exportVatCsv} disabled={!vat || loading}>
+            {/* VAT table */}
+            <div className="rp-card rp-glass">
+              <div className="rp-card-head rp-card-head--tight">
+                <div>
+                  <div className="rp-card-title">VAT Report (Invoices)</div>
+                  <div className="rp-card-sub">
+                    Totals: Subtotal <b>{(vat?.totals?.subtotal ?? 0).toFixed(2)}</b> • VAT{" "}
+                    <b>{(vat?.totals?.vat ?? 0).toFixed(2)}</b> • Total{" "}
+                    <b>{(vat?.totals?.total ?? 0).toFixed(2)}</b>
+                  </div>
+                </div>
+
+                <button className="rp-link-btn" type="button" onClick={exportVatCsv} disabled={!vat || loading}>
                   ⬇ Export VAT CSV
                 </button>
               </div>
 
-              <table>
-                <thead>
-                  <tr>
-                    <th>No.</th>
-                    <th>Date</th>
-                    <th>Customer</th>
-                    <th>Sales Rep</th>
-                    <th style={{ textAlign: "right" }}>Subtotal</th>
-                    <th style={{ textAlign: "right" }}>VAT</th>
-                    <th style={{ textAlign: "right" }}>Total</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(vat?.invoices || []).map((r) => (
-                    <tr key={r.id} onClick={() => router.push(`/invoices/${r.id}`)} style={{ cursor: "pointer" }}>
-                      <td>{r.invoice_number}</td>
-                      <td>{new Date(r.invoice_date).toLocaleDateString("en-GB")}</td>
-                      <td>{r.customer_name || "-"}</td>
-                      <td>{r.sales_rep || "—"}</td>
-                      <td style={{ textAlign: "right" }}>{Number(r.subtotal || 0).toFixed(2)}</td>
-                      <td style={{ textAlign: "right" }}>{Number(r.vat_amount || 0).toFixed(2)}</td>
-                      <td style={{ textAlign: "right" }}>{Number(r.total_amount || 0).toFixed(2)}</td>
-                      <td>{String(r.status || "UNPAID").toUpperCase()}</td>
-                    </tr>
-                  ))}
-                  {!loading && vat && (vat.invoices || []).length === 0 && (
+              <div className="rp-table-wrap">
+                <table className="rp-table">
+                  <thead>
                     <tr>
-                      <td colSpan={8}>No invoices found for this selection.</td>
+                      <th>No.</th>
+                      <th>Date</th>
+                      <th>Customer</th>
+                      <th>Sales Rep</th>
+                      <th style={{ textAlign: "right" }}>Subtotal</th>
+                      <th style={{ textAlign: "right" }}>VAT</th>
+                      <th style={{ textAlign: "right" }}>Total</th>
+                      <th>Status</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {(vat?.invoices || []).map((r) => (
+                      <tr
+                        key={r.id}
+                        onClick={() => router.push(`/invoices/${r.id}`)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <td className="rp-strong">{r.invoice_number}</td>
+                        <td>{formatDateGB(r.invoice_date)}</td>
+                        <td>{r.customer_name || "-"}</td>
+                        <td>{r.sales_rep || "—"}</td>
+                        <td style={{ textAlign: "right" }}>{Number(r.subtotal || 0).toFixed(2)}</td>
+                        <td style={{ textAlign: "right" }}>{Number(r.vat_amount || 0).toFixed(2)}</td>
+                        <td style={{ textAlign: "right" }}>{Number(r.total_amount || 0).toFixed(2)}</td>
+                        <td>{String(r.status || "UNPAID").toUpperCase()}</td>
+                      </tr>
+                    ))}
+
+                    {!loading && vat && (vat.invoices || []).length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="rp-td-empty">
+                          No invoices found for this selection.
+                        </td>
+                      </tr>
+                    )}
+
+                    {loading && (
+                      <tr>
+                        <td colSpan={8} className="rp-td-empty">
+                          Loading…
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
-          <footer style={{ marginTop: 16, fontSize: 11, color: "#6b7280", textAlign: "center" }}>
-            © {new Date().getFullYear()} Ram Pottery Ltd • Reports module
+          <footer className="rp-footer rp-card-anim" style={{ animationDelay: "220ms" }}>
+            © {new Date().getFullYear()} Ram Pottery Ltd • Built by <span>MoBiz.mu</span>
           </footer>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
-
-
-

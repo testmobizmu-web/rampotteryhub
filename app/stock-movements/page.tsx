@@ -1,13 +1,13 @@
-// app/login/page.tsx
+// app/stock-movements/page.tsx
 import { Suspense } from "react";
-import LoginClient from "./LoginClient";
+import StockMovementsClient from "./StockMovementsClient";
 
 export const dynamic = "force-dynamic";
 
-export default function LoginPage() {
+export default function StockMovementsPage() {
   return (
     <Suspense fallback={<div style={{ padding: 20 }}>Loading…</div>}>
-      <LoginClient />
+      <StockMovementsClient />
     </Suspense>
   );
 }

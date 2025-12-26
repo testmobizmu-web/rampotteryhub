@@ -1,4 +1,3 @@
-// app/layout.tsx
 import type { Metadata } from "next";
 import "./globals.css";
 
@@ -13,14 +12,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body>
+    <html lang="en" className="rp-html">
+      <body className="rp-body">
         <div className="main-shell">
-          <div className="main-container">
-            {children}
-          </div>
+          <div className="main-container">{children}</div>
         </div>
       </body>
     </html>
   );
 }
+
+

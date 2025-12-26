@@ -1,136 +1,101 @@
-// app/api/pricing/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import { createClient } from "@supabase/supabase-js";
+
+function supaAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) throw new Error("Missing Supabase env for server client.");
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
+function isAllowed(req: Request) {
+  const raw = req.headers.get("x-rp-user") || "";
+  try {
+    const u = JSON.parse(raw || "{}") as any;
+    const role = String(u?.role || "").toLowerCase();
+    return role === "admin" || Boolean(u?.permissions?.canEditStock);
+  } catch {
+    return false;
+  }
+}
 
 export async function GET(req: NextRequest) {
   try {
-    const sp = req.nextUrl.searchParams;
+    if (!isAllowed(req)) return NextResponse.json({ ok: false, error: "Access denied" }, { status: 403 });
 
-    const customerIdRaw = sp.get("customerId");
-    const productIdRaw = sp.get("productId");
+    const customerId = Number(req.nextUrl.searchParams.get("customerId") || 0);
+    if (!customerId) return NextResponse.json({ ok: false, error: "Missing customerId" }, { status: 400 });
 
-    const customerId = customerIdRaw ? Number(customerIdRaw) : null;
-    const productId = productIdRaw ? Number(productIdRaw) : null;
+    const supabase = supaAdmin();
+    const { data, error } = await supabase
+      .from("customer_product_prices")
+      .select("customer_id, product_id, price_excl_vat")
+      .eq("customer_id", customerId);
 
-    // ✅ Case A: lookup one price (used by invoice page)
-    if (customerId && productId) {
-      // 1) partywise price
-      const { data: cpp } = await supabase
-        .from("customer_product_prices")
-        .select("unit_price_excl_vat")
-        .eq("customer_id", customerId)
-        .eq("product_id", productId)
-        .maybeSingle();
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-      if (cpp && cpp.unit_price_excl_vat !== null) {
-        return NextResponse.json({
-          ok: true,
-          priceExclVat: Number(cpp.unit_price_excl_vat),
-          source: "customer",
-        });
-      }
-
-      // 2) default product price fallback (use selling_price)
-      const { data: p, error } = await supabase
-        .from("products")
-        .select("selling_price")
-        .eq("id", productId)
-        .single();
-
-      if (error || !p) {
-        return NextResponse.json(
-          { ok: false, error: "Product not found" },
-          { status: 404 }
-        );
-      }
-
-      return NextResponse.json({
-        ok: true,
-        priceExclVat: Number((p as any).selling_price || 0),
-        source: "default",
-      });
-    }
-
-    // ✅ Case B: list all prices for a customer (used by pricing UI)
-    if (customerId && !productId) {
-      const { data, error } = await supabase
-        .from("customer_product_prices")
-        .select("id, customer_id, product_id, unit_price_excl_vat, updated_at")
-        .eq("customer_id", customerId);
-
-      if (error) {
-        return NextResponse.json(
-          { ok: false, error: error.message },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({ ok: true, prices: data || [] });
-    }
-
-    return NextResponse.json(
-      { ok: false, error: "Provide customerId (and optional productId)" },
-      { status: 400 }
-    );
-  } catch (err: any) {
-    console.error(err);
-    return NextResponse.json(
-      { ok: false, error: "Pricing GET failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: true, rows: data || [] });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null);
+    if (!isAllowed(req)) return NextResponse.json({ ok: false, error: "Access denied" }, { status: 403 });
 
-    if (!body) {
-      return NextResponse.json(
-        { ok: false, error: "Missing JSON body" },
-        { status: 400 }
-      );
+    const body = (await req.json().catch(() => null)) as any;
+    const customerId = Number(body?.customerId || 0);
+    const productId = Number(body?.productId || 0);
+    const priceExclVat = Number(body?.priceExclVat);
+
+    if (!customerId || !productId || !Number.isFinite(priceExclVat) || priceExclVat <= 0) {
+      return NextResponse.json({ ok: false, error: "Invalid payload" }, { status: 400 });
     }
 
-    // Accept either single row or array
-    const rows = Array.isArray(body) ? body : [body];
-
-    const cleaned = rows.map((r: any) => {
-      const customer_id = Number(r.customerId ?? r.customer_id);
-      const product_id = Number(r.productId ?? r.product_id);
-      const unit_price_excl_vat = Number(r.unit_price_excl_vat);
-
-      if (!customer_id || !product_id || Number.isNaN(unit_price_excl_vat)) {
-        throw new Error("Invalid row: customerId, productId, unit_price_excl_vat required");
-      }
-
-      return {
-        customer_id,
-        product_id,
-        unit_price_excl_vat,
-        updated_at: new Date().toISOString(),
-      };
-    });
-
-    // Upsert using unique constraint (customer_id, product_id)
-    const { data, error } = await supabase
+    const supabase = supaAdmin();
+    const { error } = await supabase
       .from("customer_product_prices")
-      .upsert(cleaned, { onConflict: "customer_id,product_id" })
-      .select("customer_id, product_id, unit_price_excl_vat, updated_at");
+      .upsert([{ customer_id: customerId, product_id: productId, price_excl_vat: priceExclVat }] as any, {
+        onConflict: "customer_id,product_id",
+      });
 
-    if (error) {
-      return NextResponse.json(
-        { ok: false, error: error.message },
-        { status: 500 }
-      );
-    }
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-    return NextResponse.json({ ok: true, saved: data || [] });
-  } catch (err: any) {
-    console.error(err);
-    return NextResponse.json(
-      { ok: false, error: err?.message || "Pricing save failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
   }
 }
+
+export async function DELETE(req: NextRequest) {
+  try {
+    if (!isAllowed(req)) return NextResponse.json({ ok: false, error: "Access denied" }, { status: 403 });
+
+    const body = (await req.json().catch(() => null)) as any;
+    const customerId = Number(body?.customerId || 0);
+    const productId = Number(body?.productId || 0);
+
+    if (!customerId || !productId) {
+      return NextResponse.json({ ok: false, error: "Invalid payload" }, { status: 400 });
+    }
+
+    const supabase = supaAdmin();
+    const { error } = await supabase
+      .from("customer_product_prices")
+      .delete()
+      .eq("customer_id", customerId)
+      .eq("product_id", productId);
+
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
+  }
+}
+

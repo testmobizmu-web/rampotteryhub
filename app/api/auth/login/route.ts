@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fetch user from Supabase
+    // Fetch user
     const { data: user, error } = await supabase
       .from("rp_users")
       .select("id, username, password, role, permissions, is_active")
@@ -54,17 +54,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const sessionUser = {
+    // STANDARDIZED session object
+    const session = {
       id: user.id,
       username: user.username,
       role: user.role,
       permissions: user.permissions ?? {},
     };
 
-    // simple session cookie
-    const res = NextResponse.json({ ok: true, user: sessionUser });
+    const res = NextResponse.json({ ok: true, session });
 
-    res.cookies.set("rp_session", JSON.stringify(sessionUser), {
+    res.cookies.set("rp_session", JSON.stringify(session), {
       httpOnly: true,
       sameSite: "lax",
       path: "/",

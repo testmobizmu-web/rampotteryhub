@@ -13,7 +13,7 @@ export async function GET(
     const numericId = Number(id);
     const useNumeric = !Number.isNaN(numericId);
 
-    // 1) Load invoice (include sales_rep_phone ✅)
+    // 1) Load invoice (NO gross_total column ❌)
     const { data: invoice, error: invErr } = await supabase
       .from("invoices")
       .select(
@@ -32,7 +32,6 @@ export async function GET(
         total_amount,
         previous_balance,
         amount_paid,
-        gross_total,
         balance_remaining,
         status,
         customers (

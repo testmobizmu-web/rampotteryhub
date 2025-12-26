@@ -1,55 +1,77 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PREFIXES = [
-  "/api/login",
-  "/_next",
-];
+/* ---------------- PUBLIC PATHS ---------------- */
 
-const PUBLIC_EXACT = [
-  "/favicon.ico",
-  "/robots.txt",
-  "/sitemap.xml",
-];
+function isPublicPath(pathname: string) {
+  // Login page
+  if (pathname === "/login") return true;
 
-function isPublicAsset(pathname: string) {
-  if (PUBLIC_EXACT.includes(pathname)) return true;
-  return PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
+  // Auth / session APIs
+  if (pathname === "/api/auth/login") return true;
+  if (pathname === "/api/login") return true;
+  if (pathname === "/api/session") return true;
+
+  // Next internals & static
+  if (pathname.startsWith("/_next/")) return true;
+  if (pathname === "/favicon.ico") return true;
+  if (pathname === "/robots.txt") return true;
+  if (pathname.startsWith("/sitemap")) return true;
+
+  // Public assets
+  if (pathname.startsWith("/images/")) return true;
+
+  return false;
 }
 
+/* ---------------- SESSION CHECK ---------------- */
+
+function hasValidSession(req: NextRequest) {
+  const raw = req.cookies.get("rp_session")?.value;
+  if (!raw) return false;
+
+  try {
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.id && parsed?.username);
+  } catch {
+    return false;
+  }
+}
+
+/* ---------------- MIDDLEWARE ---------------- */
+
 export function middleware(req: NextRequest) {
-  const { pathname, search } = req.nextUrl;
+  const { pathname } = req.nextUrl;
 
-  const rpSession = req.cookies.get("rp_session")?.value;
-  const isLoggedIn = !!rpSession;
-
-  // ✅ Always allow /login page, BUT redirect away if already logged in
-  if (pathname === "/login") {
-    if (isLoggedIn) {
-      const dash = req.nextUrl.clone();
-      dash.pathname = "/";
-      dash.search = "";
-      return NextResponse.redirect(dash);
-    }
+  // Allow public routes
+  if (isPublicPath(pathname)) {
     return NextResponse.next();
   }
 
-  // Allow public assets + login API
-  if (isPublicAsset(pathname)) return NextResponse.next();
-
-  // Protect everything else
-  if (!isLoggedIn) {
-    const loginUrl = req.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    loginUrl.searchParams.set("next", pathname + search);
-    return NextResponse.redirect(loginUrl);
+  // Allow if logged in
+  if (hasValidSession(req)) {
+    return NextResponse.next();
   }
 
-  return NextResponse.next();
+  // API calls → 401 JSON
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
+  // Page request → redirect to login
+  const loginUrl = req.nextUrl.clone();
+  loginUrl.pathname = "/login";
+  loginUrl.searchParams.set("returnTo", pathname);
+
+  return NextResponse.redirect(loginUrl);
 }
+
+/* ---------------- CONFIG ---------------- */
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|css|js|map)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico)$).*)",
   ],
 };
-

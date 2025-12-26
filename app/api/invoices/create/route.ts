@@ -6,6 +6,11 @@ function nextInvoiceNumber(lastId: number | null): string {
   return "RP-" + String(next).padStart(4, "0");
 }
 
+function toNumber(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -18,7 +23,7 @@ export async function POST(req: NextRequest) {
 
       vatPercent,
       discountPercent, // will be 0
-      discountAmount,  // will be 0
+      discountAmount, // will be 0
 
       previousBalance,
       amountPaid,
@@ -38,6 +43,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 1) Get last invoice id for invoice number
     const { data: lastInv, error: lastErr } = await supabase
       .from("invoices")
       .select("id")
@@ -49,6 +55,7 @@ export async function POST(req: NextRequest) {
 
     const invoiceNumber = nextInvoiceNumber(lastInv?.id ?? null);
 
+    // 2) Insert invoice
     const { data: newInv, error: invError } = await supabase
       .from("invoices")
       .insert({
@@ -78,6 +85,7 @@ export async function POST(req: NextRequest) {
 
     const invoiceId = newInv.id;
 
+    // 3) Insert invoice items
     const itemsToInsert = items.map((it: any) => ({
       invoice_id: invoiceId,
       product_id: it.product_id,
@@ -94,7 +102,44 @@ export async function POST(req: NextRequest) {
       .from("invoice_items")
       .insert(itemsToInsert);
 
-    if (itemsError) throw itemsError;
+    if (itemsError) {
+      // rollback invoice to avoid orphan invoice
+      await supabase.from("invoices").delete().eq("id", invoiceId);
+      throw itemsError;
+    }
+
+    // 4) AUTO STOCK MOVEMENT (OUT) — uses your DB trigger to apply stock
+    // movement_type allowed: IN / OUT / ADJUSTMENT ; quantity must be > 0
+    const movementsToInsert = items
+      .map((it: any) => {
+        const pid = Number(it.product_id);
+        const qty = Math.abs(toNumber(it.total_qty));
+        if (!pid || qty <= 0) return null;
+
+        return {
+          product_id: pid,
+          movement_type: "OUT",
+          quantity: qty,
+          reference: newInv.invoice_number, // nice reference for audit trail
+          source_table: "invoices",
+          source_id: invoiceId,
+          notes: null,
+        };
+      })
+      .filter(Boolean) as any[];
+
+    if (movementsToInsert.length) {
+      const { error: mvErr } = await supabase
+        .from("stock_movements")
+        .insert(movementsToInsert);
+
+      if (mvErr) {
+        // rollback: delete inserted invoice + items; movements are tied to invoice id anyway
+        await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
+        await supabase.from("invoices").delete().eq("id", invoiceId);
+        throw mvErr;
+      }
+    }
 
     return NextResponse.json({
       ok: true,
@@ -109,4 +154,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-

@@ -6,6 +6,11 @@ function nextInvoiceNumber(lastId: number | null): string {
   return "RP-" + String(next).padStart(4, "0");
 }
 
+function toNumber(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -33,10 +38,7 @@ export async function POST(req: NextRequest) {
 
     if (invError || !invoice) {
       return NextResponse.json(
-        {
-          ok: false,
-          error: `Original invoice not found for id ${invoiceId}.`,
-        },
+        { ok: false, error: `Original invoice not found for id ${invoiceId}.` },
         { status: 404 }
       );
     }
@@ -85,7 +87,7 @@ export async function POST(req: NextRequest) {
         discount_percent: invoice.discount_percent,
         discount_amount: invoice.discount_amount,
       })
-      .select("id")
+      .select("id, invoice_number")
       .single();
 
     if (newInvError || !newInv) throw newInvError;
@@ -101,7 +103,42 @@ export async function POST(req: NextRequest) {
       const { error: insItemsErr } = await supabase
         .from("invoice_items")
         .insert(clonedItems);
-      if (insItemsErr) throw insItemsErr;
+      if (insItemsErr) {
+        await supabase.from("invoices").delete().eq("id", newId);
+        throw insItemsErr;
+      }
+
+      // 6) AUTO STOCK MOVEMENT (OUT) for duplicated invoice
+      const movementsToInsert = items
+        .map((it: any) => {
+          const pid = Number(it.product_id);
+          const qty = Math.abs(toNumber(it.total_qty));
+          if (!pid || qty <= 0) return null;
+
+          return {
+            product_id: pid,
+            movement_type: "OUT",
+            quantity: qty,
+            reference: newInv.invoice_number,
+            source_table: "invoices",
+            source_id: newId,
+            notes: "Duplicated invoice",
+          };
+        })
+        .filter(Boolean) as any[];
+
+      if (movementsToInsert.length) {
+        const { error: mvErr } = await supabase
+          .from("stock_movements")
+          .insert(movementsToInsert);
+
+        if (mvErr) {
+          // rollback everything for safety
+          await supabase.from("invoice_items").delete().eq("invoice_id", newId);
+          await supabase.from("invoices").delete().eq("id", newId);
+          throw mvErr;
+        }
+      }
     }
 
     return NextResponse.json({ ok: true, invoiceId: newId });
