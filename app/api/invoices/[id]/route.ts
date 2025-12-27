@@ -7,13 +7,12 @@ export async function GET(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    // ✅ REQUIRED in Next 16
     const { id } = await context.params;
 
     const numericId = Number(id);
-    const useNumeric = !Number.isNaN(numericId);
+    const useNumeric = Number.isFinite(numericId) && numericId > 0;
 
-    // 1) Load invoice (NO gross_total column ❌)
+    // 1) Load invoice
     const { data: invoice, error: invErr } = await supabase
       .from("invoices")
       .select(
@@ -25,15 +24,24 @@ export async function GET(
         purchase_order_no,
         sales_rep,
         sales_rep_phone,
+
         subtotal,
-        discount_percent,
-        discount_amount,
+        vat_percent,
         vat_amount,
         total_amount,
+
         previous_balance,
+        gross_total,
+
         amount_paid,
+        balance_due,
         balance_remaining,
+
+        discount_percent,
+        discount_amount,
+
         status,
+
         customers (
           id,
           name,
@@ -49,7 +57,7 @@ export async function GET(
       .single();
 
     if (invErr || !invoice) {
-      return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+      return NextResponse.json({ ok: false, error: "Invoice not found" }, { status: 404 });
     }
 
     // 2) Load items (join products so UI can show item_code + name)
@@ -60,10 +68,8 @@ export async function GET(
         id,
         invoice_id,
         product_id,
-        uom,
         box_qty,
         units_per_box,
-        pcs_qty,
         total_qty,
         unit_price_excl_vat,
         unit_vat,
@@ -81,17 +87,18 @@ export async function GET(
       .order("id", { ascending: true });
 
     if (itemsErr) {
-      return NextResponse.json({ error: itemsErr.message }, { status: 500 });
+      return NextResponse.json({ ok: false, error: itemsErr.message }, { status: 500 });
     }
 
     return NextResponse.json({
+      ok: true,
       invoice,
       items: items || [],
     });
   } catch (err: any) {
     console.error(err);
     return NextResponse.json(
-      { error: err?.message || "Server error" },
+      { ok: false, error: err?.message || "Server error" },
       { status: 500 }
     );
   }
