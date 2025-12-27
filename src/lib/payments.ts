@@ -39,33 +39,50 @@ function n2(v: any) {
   return Number.isFinite(x) ? x : 0;
 }
 
+function statusFromPaid(totalDue: number, paid: number, currentStatus: string) {
+  const cur = String(currentStatus || "").toUpperCase().trim();
+  if (cur === "VOID") return "VOID";
+
+  const due = Math.max(0, totalDue);
+  const p = Math.max(0, paid);
+
+  if (p <= 0) return "ISSUED";
+  if (p + 0.00001 >= due) return "PAID";
+  return "PARTIALLY_PAID";
+}
+
 /**
- * Recalculate:
+ * Recalculate and persist invoice payment state:
  * - amount_paid
  * - balance_due
+ * - balance_remaining
+ * - gross_total
  * - status (ISSUED / PARTIALLY_PAID / PAID) unless VOID
  *
- * Uses invoices.total_incl_vat (or total_amount if your schema uses it).
+ * Uses:
+ * - invoices.gross_total if present,
+ * - else total_amount + previous_balance
  */
 export async function recalcInvoicePaymentState(invoiceId: number | string) {
   const supabase = supaAdmin();
 
-  // 1) get invoice total + current status
+  // 1) get invoice totals + current status
   const { data: inv, error: invErr } = await supabase
     .from("invoices")
-    .select("id,status,total_incl_vat,total_amount")
+    .select("id,status,total_amount,previous_balance,gross_total")
     .eq("id", invoiceId)
     .single();
 
   if (invErr) throw new Error(invErr.message);
 
-  const currentStatus = String(inv?.status || "").toUpperCase();
-  if (currentStatus === "VOID") {
-    // still compute paid/balance but keep VOID
-  }
+  const currentStatus = String(inv?.status || "").toUpperCase().trim();
 
-  const total = inv?.total_incl_vat ?? inv?.total_amount ?? 0;
-  const totalNum = n2(total);
+  const totalAmount = n2(inv?.total_amount);
+  const previousBalance = n2(inv?.previous_balance);
+
+  // Prefer stored gross_total, else compute
+  const grossTotal =
+    inv?.gross_total != null ? n2(inv.gross_total) : totalAmount + previousBalance;
 
   // 2) sum payments
   const { data: pays, error: payErr } = await supabase
@@ -76,15 +93,11 @@ export async function recalcInvoicePaymentState(invoiceId: number | string) {
   if (payErr) throw new Error(payErr.message);
 
   const paid = (pays || []).reduce((sum: number, p: any) => sum + n2(p.amount), 0);
-  const balance = Math.max(0, totalNum - paid);
+
+  const balance = Math.max(0, grossTotal - paid);
 
   // 3) compute next status
-  let nextStatus = currentStatus || "ISSUED";
-  if (currentStatus !== "VOID") {
-    if (paid <= 0) nextStatus = "ISSUED";
-    else if (paid > 0 && paid + 0.0001 < totalNum) nextStatus = "PARTIALLY_PAID";
-    else nextStatus = "PAID";
-  }
+  const nextStatus = statusFromPaid(grossTotal, paid, currentStatus);
 
   // 4) update invoice
   const { error: upErr } = await supabase
@@ -92,11 +105,22 @@ export async function recalcInvoicePaymentState(invoiceId: number | string) {
     .update({
       amount_paid: paid,
       balance_due: balance,
+      balance_remaining: balance,
+      gross_total: grossTotal,
       status: nextStatus,
+      updated_at: new Date().toISOString(),
     })
     .eq("id", invoiceId);
 
   if (upErr) throw new Error(upErr.message);
 
-  return { paid, balance, status: nextStatus, total: totalNum };
+  return {
+    invoiceId: Number(inv?.id),
+    paid: +paid.toFixed(2),
+    balance: +balance.toFixed(2),
+    status: nextStatus,
+    grossTotal: +grossTotal.toFixed(2),
+    totalAmount: +totalAmount.toFixed(2),
+    previousBalance: +previousBalance.toFixed(2),
+  };
 }
