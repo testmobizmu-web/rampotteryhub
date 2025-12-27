@@ -160,28 +160,31 @@ export default function InvoiceDetailPage() {
 
   const isAdmin = String(rpUser?.role || "").toLowerCase() === "admin";
 
-  // ✅ CHANGE 1: loadInvoice returns ApiResponse | null
-  async function loadInvoice(): Promise<ApiResponse | null> {
-    const id = params.id;
-    if (!id) return null;
+  // ✅ loadInvoice returns ApiResponse | null
+async function loadInvoice(): Promise<ApiResponse | null> {
+  const id = params.id;
+  if (!id) return null;
 
-    try {
-      setLoading(true);
-      setActionError(null);
+  try {
+    setLoading(true);
+    setActionError(null);
 
-      const res = await fetch(`/api/invoices/${id}`, { cache: "no-store" });
-      const json = await res.json();
+    const res = await fetch(`/api/invoices/${id}`, { cache: "no-store" });
+    const json = await res.json().catch(() => ({}));
 
-      if (!res.ok) throw new Error(json.error || "Failed to load invoice");
-      setData(json);
-      return json as ApiResponse;
-    } catch (err: any) {
-      setActionError(err.message || "Error loading invoice");
-      return null;
-    } finally {
-      setLoading(false);
-    }
+    if (!res.ok || !json.ok) throw new Error(json.error || "Failed to load invoice");
+
+    const payload: ApiResponse = { invoice: json.invoice, items: json.items || [] };
+
+    setData(payload);
+    return payload;
+  } catch (err: any) {
+    setActionError(err.message || "Error loading invoice");
+    return null;
+  } finally {
+    setLoading(false);
   }
+}
 
   async function loadCreditNotes(invoiceId: number) {
     setCnLoading(true);
@@ -260,7 +263,12 @@ export default function InvoiceDetailPage() {
     const previousBalance = n2(invoice?.previous_balance);
     const amountPaid = n2(invoice?.amount_paid);
 
-    const grossTotal = totalAmount + previousBalance;
+    const grossTotal =
+    (invoice as any)?.gross_total != null
+    ? n2((invoice as any).gross_total)
+    : totalAmount + previousBalance;
+
+
 
     // prefer new column balance_due if present, else legacy balance_remaining, else compute
     const balance =

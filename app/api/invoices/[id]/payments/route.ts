@@ -19,6 +19,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   try {
     const { id } = await ctx.params;
 
+    const invoiceId = Number(id);
+    if (!Number.isFinite(invoiceId) || invoiceId <= 0) {
+      return NextResponse.json({ ok: false, error: "Invalid invoice id" }, { status: 400 });
+    }
+
     const user = getUserFromHeader(req.headers.get("x-rp-user"));
     if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
@@ -27,14 +32,17 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const { data, error } = await supabase
       .from("invoice_payments")
       .select("id, payment_date, amount, method, reference, notes, created_at")
-      .eq("invoice_id", id)
-      .order("payment_date", { ascending: true })
+      .eq("invoice_id", invoiceId)
+      .order("payment_date", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
     return NextResponse.json({ ok: true, payments: data || [] });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || "Unexpected error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: err?.message || "Unexpected error" },
+      { status: 500 }
+    );
   }
 }
