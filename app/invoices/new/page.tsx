@@ -10,8 +10,18 @@ export type InvoiceRow = {
   product_id: number | null;
   item_code: string;
   description: string;
+
+  // UOM
+  uom: "BOX" | "PCS";
+
+  // qty input (meaning depends on uom):
+  // - BOX: box_qty = number of boxes
+  // - PCS: box_qty = number of pieces
   box_qty: number;
+
+  // only meaningful for BOX (PCS forces 1)
   units_per_box: number;
+
   total_qty: number;
   unit_price_excl_vat: number;
   unit_vat: number;
@@ -55,9 +65,9 @@ function money(v: any) {
 }
 
 function calcRow(row: InvoiceRow) {
-  const box = n2(row.box_qty);
-  const upb = n2(row.units_per_box);
-  const qty = box * upb;
+  const qtyInput = n2(row.box_qty);
+  const upb = row.uom === "PCS" ? 1 : n2(row.units_per_box);
+  const qty = row.uom === "PCS" ? qtyInput : qtyInput * upb;
 
   const unitEx = n2(row.unit_price_excl_vat);
   const unitVat = unitEx * 0.15;
@@ -79,6 +89,7 @@ function newRow(): InvoiceRow {
     product_id: null,
     item_code: "",
     description: "",
+    uom: "BOX",
     box_qty: 1,
     units_per_box: 1,
     total_qty: 1,
@@ -159,6 +170,18 @@ export default function NewInvoicePage() {
         }
 
         setCustomerPriceMap(map);
+
+        // OPTIONAL: re-apply partywise price to any already-selected products
+        setRows((prev) =>
+          prev.map((row) => {
+            if (!row.product_id) return row;
+            const override = map[row.product_id];
+            if (override === undefined) return row;
+            const merged: InvoiceRow = { ...row, unit_price_excl_vat: n2(override) };
+            const computed = calcRow(merged);
+            return { ...merged, ...computed };
+          })
+        );
       } catch {
         setCustomerPriceMap({});
       }
@@ -201,7 +224,13 @@ export default function NewInvoicePage() {
     setRows((prev) =>
       prev.map((r) => {
         if (r.id !== rowId) return r;
+
         const merged: InvoiceRow = { ...r, ...patch };
+
+        // If user sets PCS, lock units_per_box to 1
+        if (patch.uom === "PCS") merged.units_per_box = 1;
+        if (merged.uom === "PCS") merged.units_per_box = 1;
+
         const computed = calcRow(merged);
         return { ...merged, ...computed };
       })
@@ -216,13 +245,68 @@ export default function NewInvoicePage() {
     setRows((prev) => prev.filter((r) => r.id !== rowId));
   }
 
-  // IMPORTANT: keep your real save implementation here
   async function onSave() {
+    if (!customerId) {
+      alert("Please select a customer.");
+      return;
+    }
+
+    const cleanRows = rows
+      .filter((r) => r.product_id)
+      .map((r) => ({
+        product_id: r.product_id as number,
+        box_qty: n2(r.box_qty),
+        units_per_box: r.uom === "PCS" ? 1 : n2(r.units_per_box),
+        total_qty: n2(r.total_qty),
+        description: r.description || "",
+        unit_price_excl_vat: n2(r.unit_price_excl_vat),
+        unit_vat: n2(r.unit_vat),
+        unit_price_incl_vat: n2(r.unit_price_incl_vat),
+        line_total: n2(r.line_total),
+      }));
+
+    if (cleanRows.length === 0) {
+      alert("Please add at least 1 product row.");
+      return;
+    }
+
     setSaving(true);
     try {
-      // 🔥 Keep your existing create-invoice API call here (you already have it in your project)
-      // This stub is only UI-focused.
-      alert("Replace this stub with your existing invoice create API call.");
+      const raw = localStorage.getItem("rp_user") || "";
+
+      const res = await fetch("/api/invoices", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-rp-user": raw,
+        },
+        body: JSON.stringify({
+          customer_id: customerId,
+          invoice_date: invoiceDate,
+          purchase_order_no: purchaseOrderNo || null,
+          sales_rep: salesRep || null,
+          sales_rep_phone: salesRepPhone || null,
+          items: cleanRows,
+        }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.ok === false) {
+        throw new Error(json.error || "Failed to create invoice");
+      }
+
+      const newId =
+        json.invoiceId ?? json.id ?? json.invoice?.id ?? json.data?.id ?? null;
+
+      if (!newId) {
+        alert("Invoice saved, but could not detect invoice ID. Please check the invoices list.");
+        router.push("/invoices");
+        return;
+      }
+
+      router.push(`/invoices/${newId}`);
+    } catch (e: any) {
+      alert(e?.message || "Failed to save invoice");
     } finally {
       setSaving(false);
     }
@@ -432,13 +516,21 @@ export default function NewInvoicePage() {
                 <th style={{ width: 44 }}>SN</th>
                 <th style={{ width: 92 }}>ITEM CODE</th>
                 <th style={{ width: 54 }}>BOX</th>
-                <th style={{ width: 74 }}>UNIT<br />PER BOX</th>
+                <th style={{ width: 74 }}>
+                  UNIT<br />PER BOX
+                </th>
                 <th style={{ width: 86 }}>TOTAL QTY</th>
                 <th>DESCRIPTION</th>
-                <th style={{ width: 86 }}>UNIT PRICE<br />(ExclVat)</th>
+                <th style={{ width: 86 }}>
+                  UNIT PRICE<br />(ExclVat)
+                </th>
                 <th style={{ width: 56 }}>VAT</th>
-                <th style={{ width: 86 }}>UNIT PRICE<br />(Incl Vat)</th>
-                <th style={{ width: 96 }}>TOTAL AMOUNT<br />(Incl Vat)</th>
+                <th style={{ width: 86 }}>
+                  UNIT PRICE<br />(Incl Vat)
+                </th>
+                <th style={{ width: 96 }}>
+                  TOTAL AMOUNT<br />(Incl Vat)
+                </th>
               </tr>
             </thead>
 
@@ -458,8 +550,7 @@ export default function NewInvoicePage() {
 
                           // price rule: customerPriceMap override -> product.price_excl_vat -> 0
                           const basePrice =
-                            (pid ? customerPriceMap[pid] : undefined) ??
-                            (p?.price_excl_vat ?? 0);
+                            (pid ? customerPriceMap[pid] : undefined) ?? (p?.price_excl_vat ?? 0);
 
                           onRowChange(r.id, {
                             product_id: pid,
@@ -478,19 +569,38 @@ export default function NewInvoicePage() {
                       </select>
                     </td>
 
+                    {/* BOX column: add UOM dropdown + qty input (same styling/classes) */}
                     <td>
-                      <input
-                        className="inv-cell inv-num"
-                        value={r.box_qty}
-                        onChange={(e) => onRowChange(r.id, { box_qty: n2(e.target.value) })}
-                      />
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <select
+                          className="inv-cell inv-select"
+                          value={r.uom}
+                          onChange={(e) => onRowChange(r.id, { uom: e.target.value as "BOX" | "PCS" })}
+                          style={{ width: 54, padding: "0 4px" }}
+                          title="Unit of measure"
+                        >
+                          <option value="BOX">Box</option>
+                          <option value="PCS">Pcs</option>
+                        </select>
+
+                        <input
+                          className="inv-cell inv-num"
+                          value={r.box_qty}
+                          onChange={(e) => onRowChange(r.id, { box_qty: n2(e.target.value) })}
+                          style={{ width: "100%" }}
+                          title={r.uom === "PCS" ? "Pieces" : "Boxes"}
+                        />
+                      </div>
                     </td>
 
                     <td>
                       <input
                         className="inv-cell inv-num"
                         value={r.units_per_box}
+                        readOnly={r.uom === "PCS"}
                         onChange={(e) => onRowChange(r.id, { units_per_box: n2(e.target.value) })}
+                        title={r.uom === "PCS" ? "PCS mode uses 1" : "Units per box"}
+                        style={r.uom === "PCS" ? { opacity: 0.7 } : undefined}
                       />
                     </td>
 
@@ -510,7 +620,9 @@ export default function NewInvoicePage() {
                       <input
                         className="inv-cell inv-num"
                         value={money(r.unit_price_excl_vat)}
-                        onChange={(e) => onRowChange(r.id, { unit_price_excl_vat: n2(e.target.value) })}
+                        onChange={(e) =>
+                          onRowChange(r.id, { unit_price_excl_vat: n2(e.target.value) })
+                        }
                       />
                     </td>
 
@@ -519,13 +631,21 @@ export default function NewInvoicePage() {
                     </td>
 
                     <td>
-                      <input className="inv-cell inv-num" value={money(r.unit_price_incl_vat)} readOnly />
+                      <input
+                        className="inv-cell inv-num"
+                        value={money(r.unit_price_incl_vat)}
+                        readOnly
+                      />
                     </td>
 
                     <td>
                       <div className="inv-line-total">
                         <span>{money(r.line_total)}</span>
-                        <button className="rp-noprint inv-x" onClick={() => onRemoveRow(r.id)} title="Remove row">
+                        <button
+                          className="rp-noprint inv-x"
+                          onClick={() => onRemoveRow(r.id)}
+                          title="Remove row"
+                        >
                           ✕
                         </button>
                       </div>
@@ -537,7 +657,17 @@ export default function NewInvoicePage() {
               {/* fill blank space like template */}
               {Array.from({ length: Math.max(0, 10 - rows.length) }).map((_, i) => (
                 <tr key={`blank-${i}`} className="inv-blank">
-                  <td>&nbsp;</td><td /><td /><td /><td /><td /><td /><td /><td /><td /><td />
+                  <td>&nbsp;</td>
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
                 </tr>
               ))}
             </tbody>
@@ -550,11 +680,21 @@ export default function NewInvoicePage() {
               <div className="inv-notes-title">Note:</div>
               <ul>
                 <li>Goods once sold cannot be returned or exchanged.</li>
-                <li>For any other manufacturing defects, must provide this invoice for a refund or exchange.</li>
-                <li>Customer must verify that the quantity of goods conforms with their invoice; otherwise, we will not be responsible after delivery</li>
+                <li>
+                  For any other manufacturing defects, must provide this invoice for a refund or
+                  exchange.
+                </li>
+                <li>
+                  Customer must verify that the quantity of goods conforms with their invoice;
+                  otherwise, we will not be responsible after delivery
+                </li>
                 <li>Interest of 1% above the bank rate will be charged on sum due if not settled within 30 days.</li>
-                <li>All cheques to be issued on <span className="inv-red">RAM POTTERY LTD</span>.</li>
-                <li>Bank transfer to <span className="inv-red">000 44 570 46 59 MCB Bank</span></li>
+                <li>
+                  All cheques to be issued on <span className="inv-red">RAM POTTERY LTD</span>.
+                </li>
+                <li>
+                  Bank transfer to <span className="inv-red">000 44 570 46 59 MCB Bank</span>
+                </li>
               </ul>
             </div>
 
@@ -616,7 +756,9 @@ export default function NewInvoicePage() {
           </div>
 
           {/* Footer red bar */}
-          <div className="inv-thanks">We thank you for your purchase and look forward to being of service to you again</div>
+          <div className="inv-thanks">
+            We thank you for your purchase and look forward to being of service to you again
+          </div>
         </div>
       </div>
 
@@ -631,7 +773,7 @@ export default function NewInvoicePage() {
           justify-content: center;
         }
         .rp-btn {
-          border: 1px solid rgba(0,0,0,.18);
+          border: 1px solid rgba(0, 0, 0, 0.18);
           background: #fff;
           border-radius: 10px;
           padding: 10px 14px;
@@ -656,7 +798,7 @@ export default function NewInvoicePage() {
           min-height: 297mm;
           background: #fff;
           border: 2px solid #111;
-          box-shadow: 0 10px 40px rgba(0,0,0,.18);
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
           position: relative;
         }
 
@@ -676,7 +818,7 @@ export default function NewInvoicePage() {
         .inv-logo-caption-title {
           font-weight: 900;
           color: #d30010;
-          letter-spacing: .6px;
+          letter-spacing: 0.6px;
         }
         .inv-logo-caption-sub {
           font-size: 12px;
@@ -716,9 +858,12 @@ export default function NewInvoicePage() {
           margin-top: 6px;
           font-weight: 1000;
           color: #d30010;
-          letter-spacing: .8px;
+          letter-spacing: 0.8px;
         }
-        .inv-red { color: #e30613; font-weight: 1000; }
+        .inv-red {
+          color: #e30613;
+          font-weight: 1000;
+        }
 
         .inv-bar {
           background: #e30613;
@@ -728,7 +873,7 @@ export default function NewInvoicePage() {
           padding: 6px 10px;
           border-top: 2px solid #111;
           border-bottom: 2px solid #111;
-          letter-spacing: .4px;
+          letter-spacing: 0.4px;
         }
 
         .inv-topgrid {
@@ -747,7 +892,7 @@ export default function NewInvoicePage() {
           padding: 6px 10px;
           border-bottom: 2px solid #111;
           text-align: center;
-          letter-spacing: .4px;
+          letter-spacing: 0.4px;
         }
         .inv-box-body {
           padding: 10px;
@@ -765,10 +910,16 @@ export default function NewInvoicePage() {
           grid-template-columns: 1fr 1fr;
           gap: 10px;
         }
-        .inv-lab { color: #d30010; font-weight: 1000; }
-        .inv-val { width: 100%; }
+        .inv-lab {
+          color: #d30010;
+          font-weight: 1000;
+        }
+        .inv-val {
+          width: 100%;
+        }
 
-        .inv-input, .inv-select {
+        .inv-input,
+        .inv-select {
           width: 100%;
           height: 26px;
           border: 1px solid #333;
@@ -803,7 +954,10 @@ export default function NewInvoicePage() {
           font-size: 12px;
           font-weight: 900;
         }
-        .inv-td-center { text-align: center; padding: 4px; }
+        .inv-td-center {
+          text-align: center;
+          padding: 4px;
+        }
 
         .inv-cell {
           width: 100%;
@@ -814,8 +968,12 @@ export default function NewInvoicePage() {
           font-size: 12px;
           background: #fff;
         }
-        .inv-num { text-align: right; }
-        .inv-blank td { height: 30px; }
+        .inv-num {
+          text-align: right;
+        }
+        .inv-blank td {
+          height: 30px;
+        }
 
         .inv-line-total {
           display: flex;
@@ -835,7 +993,7 @@ export default function NewInvoicePage() {
 
         .inv-bottom {
           display: grid;
-          grid-template-columns: 1.2fr .8fr;
+          grid-template-columns: 1.2fr 0.8fr;
           gap: 12px;
           padding: 10px 12px;
         }
@@ -855,7 +1013,9 @@ export default function NewInvoicePage() {
           margin: 0;
           padding-left: 16px;
         }
-        .inv-notes li { margin: 5px 0; }
+        .inv-notes li {
+          margin: 5px 0;
+        }
 
         .inv-totals {
           border: 2px solid #111;
@@ -869,7 +1029,9 @@ export default function NewInvoicePage() {
           font-size: 12px;
           font-weight: 1000;
         }
-        .inv-trow:last-child { border-bottom: 0; }
+        .inv-trow:last-child {
+          border-bottom: 0;
+        }
         .inv-trow > div {
           padding: 6px 8px;
         }
@@ -878,7 +1040,9 @@ export default function NewInvoicePage() {
           text-align: right;
           font-variant-numeric: tabular-nums;
         }
-        .inv-strong { background: #f7f7f7; }
+        .inv-strong {
+          background: #f7f7f7;
+        }
 
         .inv-sign {
           display: grid;
@@ -886,15 +1050,24 @@ export default function NewInvoicePage() {
           gap: 18px;
           padding: 18px 18px 10px;
         }
-        .inv-sig { text-align: center; }
+        .inv-sig {
+          text-align: center;
+        }
         .inv-sig-line {
           border-top: 2px solid #111;
           margin: 0 auto 8px;
           width: 80%;
           height: 1px;
         }
-        .inv-sig-lab { font-size: 12px; font-weight: 1000; }
-        .inv-sig-sub { font-size: 11px; font-weight: 800; margin-top: 4px; }
+        .inv-sig-lab {
+          font-size: 12px;
+          font-weight: 1000;
+        }
+        .inv-sig-sub {
+          font-size: 11px;
+          font-weight: 800;
+          margin-top: 4px;
+        }
 
         .inv-thanks {
           margin: 10px 0 0;
@@ -909,11 +1082,24 @@ export default function NewInvoicePage() {
 
         /* ========= Print rules ========= */
         @media print {
-          .rp-noprint { display: none !important; }
-          body { background: #fff !important; }
-          .inv-a4 { padding: 0 !important; background: #fff !important; }
-          .inv-border { box-shadow: none !important; border: 2px solid #111 !important; }
-          @page { size: A4; margin: 10mm; }
+          .rp-noprint {
+            display: none !important;
+          }
+          body {
+            background: #fff !important;
+          }
+          .inv-a4 {
+            padding: 0 !important;
+            background: #fff !important;
+          }
+          .inv-border {
+            box-shadow: none !important;
+            border: 2px solid #111 !important;
+          }
+          @page {
+            size: A4;
+            margin: 10mm;
+          }
         }
       `}</style>
     </>

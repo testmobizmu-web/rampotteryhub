@@ -126,7 +126,9 @@ export default function InvoiceDetailPage() {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [actionBusy, setActionBusy] = useState<null | "PRINT" | "PAYMENT_ADD" | "PAYMENT_DELETE">(null);
+  const [actionBusy, setActionBusy] = useState<
+    null | "PRINT" | "PAYMENT_ADD" | "PAYMENT_DELETE"
+  >(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const [cnLoading, setCnLoading] = useState(false);
@@ -158,9 +160,10 @@ export default function InvoiceDetailPage() {
 
   const isAdmin = String(rpUser?.role || "").toLowerCase() === "admin";
 
-  async function loadInvoice() {
+  // ✅ CHANGE 1: loadInvoice returns ApiResponse | null
+  async function loadInvoice(): Promise<ApiResponse | null> {
     const id = params.id;
-    if (!id) return;
+    if (!id) return null;
 
     try {
       setLoading(true);
@@ -171,8 +174,10 @@ export default function InvoiceDetailPage() {
 
       if (!res.ok) throw new Error(json.error || "Failed to load invoice");
       setData(json);
+      return json as ApiResponse;
     } catch (err: any) {
       setActionError(err.message || "Error loading invoice");
+      return null;
     } finally {
       setLoading(false);
     }
@@ -182,11 +187,15 @@ export default function InvoiceDetailPage() {
     setCnLoading(true);
     setCnError(null);
     try {
-      const res = await fetch(`/api/credit-notes/by-invoice?invoiceId=${invoiceId}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/credit-notes/by-invoice?invoiceId=${invoiceId}`,
+        {
+          cache: "no-store",
+        }
+      );
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json.ok) throw new Error(json.error || "Failed to load credit notes");
+      if (!res.ok || !json.ok)
+        throw new Error(json.error || "Failed to load credit notes");
       setCreditNotes(json.creditNotes || []);
     } catch (e: any) {
       setCnError(e.message || "Failed to load credit notes");
@@ -205,7 +214,8 @@ export default function InvoiceDetailPage() {
         headers: { "x-rp-user": rpUserRaw },
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json.ok) throw new Error(json.error || "Failed to load payments");
+      if (!res.ok || !json.ok)
+        throw new Error(json.error || "Failed to load payments");
       setPayments(Array.isArray(json.payments) ? json.payments : []);
     } catch (e: any) {
       setPayError(e.message || "Failed to load payments");
@@ -277,6 +287,10 @@ export default function InvoiceDetailPage() {
 
   async function addPayment() {
     if (!invoice?.id) return;
+
+    // ✅ CHANGE 2a: capture status before adding
+    const wasPaid = String(invoice?.status || "").toUpperCase() === "PAID";
+
     const amt = n2(payAmount);
     if (!amt || amt <= 0) return alert("Enter a valid payment amount (> 0).");
 
@@ -306,8 +320,29 @@ export default function InvoiceDetailPage() {
       setPayRef("");
       setPayNotes("");
 
-      await loadInvoice();
+      // ✅ CHANGE 2b: reload + detect status change to PAID
+      const updated = await loadInvoice();
       await loadPayments(invoice.id);
+
+      const nowPaid = String(updated?.invoice?.status || "").toUpperCase() === "PAID";
+
+      if (!wasPaid && nowPaid) {
+        const wa = toWhatsAppDigits(customer?.phone);
+        if (wa) {
+          const ok = confirm(
+            "Payment recorded and invoice is now PAID. Send WhatsApp paid confirmation now?"
+          );
+          if (ok) {
+            const msg = buildPaidWhatsAppText({
+              customerName: customer?.name || "Client",
+              invoiceNo: invoice.invoice_number,
+              total: computed.grossTotal,
+              date: invoiceDateFormatted,
+            });
+            window.open(`https://wa.me/${wa}?text=${msg}`, "_blank");
+          }
+        }
+      }
     } catch (e: any) {
       setActionError(e.message || "Failed to add payment");
     } finally {
@@ -364,12 +399,23 @@ export default function InvoiceDetailPage() {
           </div>
         </div>
 
-        <button className="rp-nav-item" onClick={() => router.push("/invoices")} style={{ marginTop: 16 }}>
+        <button
+          className="rp-nav-item"
+          onClick={() => router.push("/invoices")}
+          style={{ marginTop: 16 }}
+        >
           ← Back to Invoices
         </button>
 
         <div style={{ marginTop: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
             <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Status</div>
             <span className={badge.cls}>
               <span className="rp-status-dot" />
@@ -378,13 +424,15 @@ export default function InvoiceDetailPage() {
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, fontWeight: 850, opacity: 0.8 }}>
-            Total (Gross): <span style={{ opacity: 1 }}>Rs {computed.grossTotal.toFixed(2)}</span>
+            Total (Gross):{" "}
+            <span style={{ opacity: 1 }}>Rs {computed.grossTotal.toFixed(2)}</span>
           </div>
           <div style={{ marginTop: 6, fontSize: 12, fontWeight: 850, opacity: 0.8 }}>
             Paid: <span style={{ opacity: 1 }}>Rs {computed.amountPaid.toFixed(2)}</span>
           </div>
           <div style={{ marginTop: 6, fontSize: 12, fontWeight: 900, opacity: 0.9 }}>
-            Balance Due: <span style={{ opacity: 1 }}>Rs {computed.balanceDue.toFixed(2)}</span>
+            Balance Due:{" "}
+            <span style={{ opacity: 1 }}>Rs {computed.balanceDue.toFixed(2)}</span>
           </div>
         </div>
 
@@ -410,7 +458,8 @@ export default function InvoiceDetailPage() {
           className="rp-nav-item"
           disabled={!isPaid}
           onClick={() => {
-            if (!isPaid) return alert("Invoice must be PAID to send WhatsApp confirmation.");
+            if (!isPaid)
+              return alert("Invoice must be PAID to send WhatsApp confirmation.");
 
             const wa = toWhatsAppDigits(customer?.phone);
             if (!wa) return alert("Customer phone missing/invalid for WhatsApp.");
@@ -434,7 +483,9 @@ export default function InvoiceDetailPage() {
             className="rp-nav-item"
             onClick={() =>
               router.push(
-                `/credit-notes/new?customerId=${invoice.customers?.id || ""}&invoiceId=${invoice.id}`
+                `/credit-notes/new?customerId=${invoice.customers?.id || ""}&invoiceId=${
+                  invoice.id
+                }`
               )
             }
             style={{ width: "100%", marginBottom: 8 }}
@@ -442,7 +493,11 @@ export default function InvoiceDetailPage() {
             ➕ Create Credit Note (for this invoice)
           </button>
 
-          <button className="rp-nav-item" onClick={() => router.push("/credit-notes")} style={{ width: "100%" }}>
+          <button
+            className="rp-nav-item"
+            onClick={() => router.push("/credit-notes")}
+            style={{ width: "100%" }}
+          >
             📄 View Credit Notes
           </button>
         </div>
@@ -527,7 +582,15 @@ export default function InvoiceDetailPage() {
         {/* Payments table (screen only) */}
         <div className="print-hidden" style={{ maxWidth: 920, margin: "12px auto 18px" }}>
           <div className="card">
-            <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div
+              className="panel-title"
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
               <span>Payments</span>
               <span style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>
                 Payments total: Rs {paymentsTotal.toFixed(2)}
@@ -563,7 +626,14 @@ export default function InvoiceDetailPage() {
                         </td>
                         <td style={{ fontWeight: 950 }}>{String(p.method || "—")}</td>
                         <td>{p.reference || "—"}</td>
-                        <td style={{ maxWidth: 320, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <td
+                          style={{
+                            maxWidth: 320,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
                           {p.notes || "—"}
                         </td>
                         <td style={{ textAlign: "right", fontWeight: 950 }}>
@@ -590,11 +660,26 @@ export default function InvoiceDetailPage() {
               </div>
             )}
 
-            <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button className="btn-primary-red" onClick={() => setPayModalOpen(true)} disabled={actionBusy !== null}>
+            <div
+              style={{
+                marginTop: 12,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+              }}
+            >
+              <button
+                className="btn-primary-red"
+                onClick={() => setPayModalOpen(true)}
+                disabled={actionBusy !== null}
+              >
                 ➕ Add Payment
               </button>
-              <button className="rp-nav-item" onClick={() => invoice?.id && loadPayments(invoice.id)} disabled={actionBusy !== null}>
+              <button
+                className="rp-nav-item"
+                onClick={() => invoice?.id && loadPayments(invoice.id)}
+                disabled={actionBusy !== null}
+              >
                 Refresh
               </button>
             </div>
@@ -636,7 +721,10 @@ export default function InvoiceDetailPage() {
                         <td>{Number(cn.total_amount || 0).toFixed(2)}</td>
                         <td>{String(cn.status || "—").toUpperCase()}</td>
                         <td>
-                          <button className="btn btn-ghost" onClick={() => router.push(`/credit-notes/${cn.id}`)}>
+                          <button
+                            className="btn btn-ghost"
+                            onClick={() => router.push(`/credit-notes/${cn.id}`)}
+                          >
                             View
                           </button>
                         </td>
@@ -656,7 +744,11 @@ export default function InvoiceDetailPage() {
           <div className="rp-modal">
             <div className="rp-modal-head">
               <div className="rp-modal-title">Add Payment</div>
-              <button className="rp-modal-x" onClick={() => setPayModalOpen(false)} aria-label="Close">
+              <button
+                className="rp-modal-x"
+                onClick={() => setPayModalOpen(false)}
+                aria-label="Close"
+              >
                 ✕
               </button>
             </div>
@@ -676,7 +768,11 @@ export default function InvoiceDetailPage() {
 
                 <div>
                   <div className="rp-label">Method</div>
-                  <select className="rp-input-plain" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                  <select
+                    className="rp-input-plain"
+                    value={payMethod}
+                    onChange={(e) => setPayMethod(e.target.value)}
+                  >
                     <option value="Cash">Cash</option>
                     <option value="Juice">Juice</option>
                     <option value="Bank">Bank Transfer</option>
@@ -711,10 +807,18 @@ export default function InvoiceDetailPage() {
             </div>
 
             <div className="rp-modal-foot">
-              <button className="rp-nav-item" onClick={() => setPayModalOpen(false)} disabled={actionBusy !== null}>
+              <button
+                className="rp-nav-item"
+                onClick={() => setPayModalOpen(false)}
+                disabled={actionBusy !== null}
+              >
                 Cancel
               </button>
-              <button className="btn-primary-red" onClick={addPayment} disabled={actionBusy !== null}>
+              <button
+                className="btn-primary-red"
+                onClick={addPayment}
+                disabled={actionBusy !== null}
+              >
                 {actionBusy === "PAYMENT_ADD" ? "Saving…" : "Save Payment"}
               </button>
             </div>

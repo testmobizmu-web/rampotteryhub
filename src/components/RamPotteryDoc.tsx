@@ -27,10 +27,10 @@ type Totals = {
 
 export type RamPotteryDocProps = {
   variant: "INVOICE" | "CREDIT_NOTE";
-  docNoLabel: string;         // "INVOICE NO:" / "CREDIT NOTE NO:"
-  docNoValue: string;         // RP-0001 / CN-0001 etc
-  dateLabel: string;          // "DATE:"
-  dateValue: string;          // YYYY-MM-DD or formatted string
+  docNoLabel: string; // "INVOICE NO:" / "CREDIT NOTE NO:"
+  docNoValue: string; // RP-0001 / CN-0001 etc
+  dateLabel: string; // "DATE:"
+  dateValue: string; // YYYY-MM-DD or formatted string
   purchaseOrderLabel?: string; // "PURCHASE ORDER NO:"
   purchaseOrderValue?: string | null;
 
@@ -95,6 +95,12 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
 
   const vatLabel = totals.vatPercentLabel || "VAT 15%";
 
+  const brn = (company?.brn || "").trim();
+  const vatNo = (company?.vat_no || "").trim();
+
+  const repName = (salesRepName || "").trim();
+  const repPhone = (salesRepPhone || "").trim();
+
   return (
     <div className="rpdoc-wrap">
       <div className="rpdoc-page">
@@ -118,13 +124,20 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
 
             {/* Optional: keep as-is if you already store it somewhere */}
             <div className="rpdoc-contacts">
-              <span><b>Tel:</b> +230 57788884 +230 58060268 +230 52522844</span>
-              <span><b>Email:</b> info@rampottery.com</span>
-              <span><b>Web:</b> www.rampottery.com</span>
+              <span>
+                <b>Tel:</b> +230 57788884 +230 58060268 +230 52522844
+              </span>
+              <span>
+                <b>Email:</b> info@rampottery.com
+              </span>
+              <span>
+                <b>Web:</b> www.rampottery.com
+              </span>
             </div>
 
             <div className="rpdoc-midtitle">
-              {tableHeaderRightTitle || (variant === "INVOICE" ? "VAT INVOICE" : "CREDIT NOTE")}
+              {tableHeaderRightTitle ||
+                (variant === "INVOICE" ? "VAT INVOICE" : "CREDIT NOTE")}
             </div>
           </div>
         </div>
@@ -135,30 +148,72 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           <div className="rpdoc-box">
             <div className="rpdoc-box-title">CUSTOMER DETAILS</div>
             <div className="rpdoc-box-body">
-              <div className="rpdoc-row"><span className="k">Name:</span><span className="v">{customer?.name || ""}</span></div>
-              <div className="rpdoc-row"><span className="k">ADDRESS:</span><span className="v">{customer?.address || ""}</span></div>
-              <div className="rpdoc-row"><span className="k">Tel:</span><span className="v">{customer?.phone || ""}</span></div>
-              <div className="rpdoc-row rpdoc-row-split">
-                <span><span className="k">BRN:</span> <span className="v">{customer?.brn || ""}</span></span>
-                <span><span className="k">VAT No:</span> <span className="v">{customer?.vat_no || ""}</span></span>
+              <div className="rpdoc-row">
+                <span className="k">Name:</span>
+                <span className="v">{customer?.name || ""}</span>
               </div>
-              <div className="rpdoc-row"><span className="k">CUSTOMER CODE:</span><span className="v">{customer?.customer_code || ""}</span></div>
+              <div className="rpdoc-row">
+                <span className="k">ADDRESS:</span>
+                <span className="v">{customer?.address || ""}</span>
+              </div>
+              <div className="rpdoc-row">
+                <span className="k">Tel:</span>
+                <span className="v">{customer?.phone || ""}</span>
+              </div>
+              <div className="rpdoc-row rpdoc-row-split">
+                <span>
+                  <span className="k">BRN:</span>{" "}
+                  <span className="v">{customer?.brn || ""}</span>
+                </span>
+                <span>
+                  <span className="k">VAT No:</span>{" "}
+                  <span className="v">{customer?.vat_no || ""}</span>
+                </span>
+              </div>
+              <div className="rpdoc-row">
+                <span className="k">CUSTOMER CODE:</span>
+                <span className="v">{customer?.customer_code || ""}</span>
+              </div>
             </div>
           </div>
 
           {/* Invoice details */}
           <div className="rpdoc-box">
             <div className="rpdoc-box-title rpdoc-box-title-center">
-              BRN: {company?.brn || "—"} | VAT:{company?.vat_no || "—"}
+              {/* no design change: just avoid "—" */}
+              BRN: {brn} {brn || vatNo ? "|" : ""} VAT:{vatNo}
             </div>
             <div className="rpdoc-box-body">
-              <div className="rpdoc-row"><span className="k">{docNoLabel}</span><span className="v">{docNoValue}</span></div>
-              <div className="rpdoc-row"><span className="k">{dateLabel}</span><span className="v">{dateValue}</span></div>
-              <div className="rpdoc-row"><span className="k">{purchaseOrderLabel}</span><span className="v">{purchaseOrderValue || ""}</span></div>
+              <div className="rpdoc-row">
+                <span className="k">{docNoLabel}</span>
+                <span className="v">{docNoValue}</span>
+              </div>
+              <div className="rpdoc-row">
+                <span className="k">{dateLabel}</span>
+                <span className="v">{dateValue}</span>
+              </div>
+              <div className="rpdoc-row">
+                <span className="k">{purchaseOrderLabel}</span>
+                <span className="v">{purchaseOrderValue || ""}</span>
+              </div>
 
               <div className="rpdoc-row rpdoc-row-split">
-                <span><span className="k">SALES REP:</span> <span className="v">{salesRepName || ""}</span></span>
-                <span><span className="k">Tel:</span> <span className="v">{salesRepPhone || ""}</span></span>
+                <span>
+                  <span className="k">SALES REP:</span>{" "}
+                  <span className="v">{repName}</span>
+                </span>
+
+                {/* no design change: hide Tel label if empty */}
+                <span>
+                  {repPhone ? (
+                    <>
+                      <span className="k">Tel:</span>{" "}
+                      <span className="v">{repPhone}</span>
+                    </>
+                  ) : (
+                    <span className="v"></span>
+                  )}
+                </span>
               </div>
             </div>
           </div>
@@ -173,10 +228,22 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             <div>UNIT PER BOX</div>
             <div>TOTAL QTY</div>
             <div>DESCRIPTION</div>
-            <div>UNIT PRICE<br />(Excl Vat)</div>
+            <div>
+              UNIT PRICE
+              <br />
+              (Excl Vat)
+            </div>
             <div>VAT</div>
-            <div>UNIT PRICE<br />(Incl Vat)</div>
-            <div>TOTAL AMOUNT<br />(Incl Vat)</div>
+            <div>
+              UNIT PRICE
+              <br />
+              (Incl Vat)
+            </div>
+            <div>
+              TOTAL AMOUNT
+              <br />
+              (Incl Vat)
+            </div>
           </div>
 
           <div className="rpdoc-tbody">
@@ -207,27 +274,60 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             <div className="rpdoc-notes-title">Note:</div>
             <ul>
               <li>Goods once sold cannot be returned or exchanged.</li>
-              <li>For any other manufacturing defects, must provide this invoice for a refund or exchange.</li>
-              <li>Customer must verify that the quantity of goods conforms with their invoice; otherwise, we will not be responsible after delivery</li>
-              <li>Interest of 1% above the bank rate will be charged on sum due if not settled within 30 days.</li>
-              <li>All cheques to be issued on <b>RAM POTTERY LTD</b>.</li>
-              <li>Bank transfer to <b>000 44 570 46 59</b> MCB Bank</li>
+              <li>
+                For any other manufacturing defects, must provide this invoice for a refund or
+                exchange.
+              </li>
+              <li>
+                Customer must verify that the quantity of goods conforms with their invoice;
+                otherwise, we will not be responsible after delivery
+              </li>
+              <li>
+                Interest of 1% above the bank rate will be charged on sum due if not settled within
+                30 days.
+              </li>
+              <li>
+                All cheques to be issued on <b>RAM POTTERY LTD</b>.
+              </li>
+              <li>
+                Bank transfer to <b>000 44 570 46 59</b> MCB Bank
+              </li>
             </ul>
           </div>
 
           {/* Totals */}
           <div className="rpdoc-totals">
-            <div className="rpdoc-trow"><span>SUB TOTAL</span><span>{money(totals.subtotal)}</span></div>
-            <div className="rpdoc-trow"><span>{vatLabel}</span><span>{money(totals.vat_amount)}</span></div>
-            <div className="rpdoc-trow"><span>TOTAL AMOUNT</span><span>{money(totals.total_amount)}</span></div>
-            <div className="rpdoc-trow"><span>PREVIOUS BALANCE</span><span>{money(totals.previous_balance)}</span></div>
+            <div className="rpdoc-trow">
+              <span>SUB TOTAL</span>
+              <span>{money(totals.subtotal)}</span>
+            </div>
+            <div className="rpdoc-trow">
+              <span>{vatLabel}</span>
+              <span>{money(totals.vat_amount)}</span>
+            </div>
+            <div className="rpdoc-trow">
+              <span>TOTAL AMOUNT</span>
+              <span>{money(totals.total_amount)}</span>
+            </div>
+            <div className="rpdoc-trow">
+              <span>PREVIOUS BALANCE</span>
+              <span>{money(totals.previous_balance)}</span>
+            </div>
             {/* Gross Total is computed visually (no DB column needed) */}
             <div className="rpdoc-trow">
               <span>GROSS TOTAL</span>
-              <span>{money((Number(totals.total_amount || 0) + Number(totals.previous_balance || 0)))}</span>
+              <span>
+                {money(Number(totals.total_amount || 0) + Number(totals.previous_balance || 0))}
+              </span>
             </div>
-            <div className="rpdoc-trow"><span>AMOUNT PAID</span><span>{money(totals.amount_paid)}</span></div>
-            <div className="rpdoc-trow"><span>BALANCE REMAINING</span><span>{money(totals.balance_remaining)}</span></div>
+            <div className="rpdoc-trow">
+              <span>AMOUNT PAID</span>
+              <span>{money(totals.amount_paid)}</span>
+            </div>
+            <div className="rpdoc-trow">
+              <span>BALANCE REMAINING</span>
+              <span>{money(totals.balance_remaining)}</span>
+            </div>
           </div>
         </div>
 
@@ -249,14 +349,14 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             <div className="rpdoc-line" />
             <div>Customer Signature</div>
             <div>Customer Name: __________________</div>
-            <div><i>Please verify before sign</i></div>
+            <div>
+              <i>Please verify before sign</i>
+            </div>
           </div>
         </div>
 
         {/* Footer bar */}
-        <div className="rpdoc-footerbar">
-          {footerThanksText}
-        </div>
+        <div className="rpdoc-footerbar">{footerThanksText}</div>
       </div>
     </div>
   );

@@ -360,7 +360,7 @@ export default function CustomersPage() {
                 </div>
 
                 <div>
-                  <div className="rp-label">Customer Name *</div>
+                  <div className="rp-label">Client — Customer Name *</div>
                   <input
                     className="rp-input"
                     value={name}

@@ -43,7 +43,6 @@ function normalizeCustomer(c: InvoiceRow["customers"]): CustomerMini | null {
 function badgeForInvoice(statusRaw: string | null | undefined) {
   const st = String(statusRaw || "ISSUED").toUpperCase().trim();
 
-  // Map your statuses to the dashboard badge system
   if (st === "PAID") return { label: "PAID", cls: "rp-badge rp-badge--paid" };
   if (st === "PARTIALLY_PAID") return { label: "PARTIALLY PAID", cls: "rp-badge rp-badge--partial" };
   if (st === "VOID") return { label: "VOID", cls: "rp-badge rp-badge--void" };
@@ -69,22 +68,43 @@ function downloadCsv(filename: string, headers: string[], rows: Array<Array<unkn
   URL.revokeObjectURL(url);
 }
 
+function isoDateOnly(s: string) {
+  // expects "YYYY-MM-DD" from <input type="date">
+  return s;
+}
+
+function parseInvoiceDateToYmd(invDate: string | null | undefined): string | null {
+  if (!invDate) return null;
+  // DB date comes as "YYYY-MM-DD" normally; keep safe fallback
+  const s = String(invDate).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(invDate);
+  if (Number.isNaN(d.getTime())) return null;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export default function InvoicesPage() {
   const router = useRouter();
 
   const [rows, setRows] = useState<InvoiceRow[]>([]);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<FilterKey>("ALL");
+
+  // ✅ Date range filters (for reprint 3–6 months+)
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   const [dark, setDark] = useState(false);
   const [lastSync, setLastSync] = useState<string>("—");
 
-  /* ✅ MOBILE DRAWER STATE */
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // lock background scroll when drawer is open
   useEffect(() => {
     if (typeof document === "undefined") return;
     document.body.style.overflow = mobileNavOpen ? "hidden" : "";
@@ -93,7 +113,6 @@ export default function InvoicesPage() {
     };
   }, [mobileNavOpen]);
 
-  // close on ESC
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setMobileNavOpen(false);
@@ -102,7 +121,6 @@ export default function InvoicesPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // theme init
   useEffect(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("rp_theme") : null;
     const isDark = saved === "dark";
@@ -161,6 +179,9 @@ export default function InvoicesPage() {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
 
+    const from = fromDate ? isoDateOnly(fromDate) : "";
+    const to = toDate ? isoDateOnly(toDate) : "";
+
     return rows
       .filter((r) => {
         if (filter === "ALL") return true;
@@ -168,14 +189,32 @@ export default function InvoicesPage() {
         return st === filter;
       })
       .filter((r) => {
+        // ✅ date range filter
+        if (!from && !to) return true;
+
+        const ymd = parseInvoiceDateToYmd(r.invoice_date);
+        if (!ymd) return false;
+
+        if (from && ymd < from) return false;
+        if (to && ymd > to) return false;
+
+        return true;
+      })
+      .filter((r) => {
         if (!needle) return true;
         const c = normalizeCustomer(r.customers);
-        const hay = [r.invoice_number || "", r.invoice_date || "", r.status || "", c?.name || "", c?.customer_code || ""]
+        const hay = [
+          r.invoice_number || "",
+          r.invoice_date || "",
+          r.status || "",
+          c?.name || "",
+          c?.customer_code || "",
+        ]
           .join(" ")
           .toLowerCase();
         return hay.includes(needle);
       });
-  }, [rows, q, filter]);
+  }, [rows, q, filter, fromDate, toDate]);
 
   const totals = useMemo(() => {
     const sumTotal = filtered.reduce((a, r) => a + Number(r.total_amount || 0), 0);
@@ -192,7 +231,6 @@ export default function InvoicesPage() {
     const dataRows = filtered.map((r) => {
       const c = normalizeCustomer(r.customers);
       const badge = badgeForInvoice(r.status);
-
       const balance = r.balance_due != null ? Number(r.balance_due || 0) : Number(r.balance_remaining || 0);
 
       return [
@@ -226,9 +264,13 @@ export default function InvoicesPage() {
     localStorage.setItem("rp_theme", next ? "dark" : "light");
   }
 
+  function clearDates() {
+    setFromDate("");
+    setToDate("");
+  }
+
   return (
     <div className="rp-app">
-      {/* animated luxury background */}
       <div className="rp-bg" aria-hidden="true">
         <span className="rp-bg-orb rp-bg-orb--1" />
         <span className="rp-bg-orb rp-bg-orb--2" />
@@ -237,7 +279,6 @@ export default function InvoicesPage() {
       </div>
 
       <div className="rp-shell rp-enter">
-        {/* ===== MOBILE TOP BAR ===== */}
         <div className="rp-mtop">
           <button
             type="button"
@@ -263,7 +304,6 @@ export default function InvoicesPage() {
           </button>
         </div>
 
-        {/* ===== MOBILE OVERLAY ===== */}
         <button
           type="button"
           className={`rp-overlay ${mobileNavOpen ? "is-open" : ""}`}
@@ -271,7 +311,6 @@ export default function InvoicesPage() {
           onClick={() => setMobileNavOpen(false)}
         />
 
-        {/* ===== MOBILE DRAWER ===== */}
         <aside className={`rp-drawer ${mobileNavOpen ? "is-open" : ""}`} aria-label="Mobile navigation">
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -309,7 +348,6 @@ export default function InvoicesPage() {
           </nav>
         </aside>
 
-        {/* ===== DESKTOP SIDEBAR ===== */}
         <aside className="rp-side">
           <div className="rp-side-card rp-card-anim">
             <div className="rp-brand">
@@ -350,9 +388,7 @@ export default function InvoicesPage() {
           </div>
         </aside>
 
-        {/* ===== MAIN ===== */}
         <main className="rp-main">
-          {/* Header */}
           <div className="rp-top rp-card-anim" style={{ animationDelay: "60ms" }}>
             <div className="rp-title">
               <div className="rp-eyebrow">
@@ -375,7 +411,6 @@ export default function InvoicesPage() {
             </div>
           </div>
 
-          {/* Actions */}
           <div className="rp-actions rp-card-anim" style={{ animationDelay: "120ms" }}>
             <div className="rp-seg">
               <Link className="rp-seg-item rp-seg-item--primary" href="/invoices/new">
@@ -396,7 +431,6 @@ export default function InvoicesPage() {
             </div>
           </div>
 
-          {/* KPIs (small, premium) */}
           <section className="rp-kpis rp-card-anim" style={{ animationDelay: "170ms" }}>
             <div className="rp-kpi-card">
               <div className="rp-kpi-head">
@@ -435,12 +469,11 @@ export default function InvoicesPage() {
             </div>
           </section>
 
-          {/* Search + Filter row */}
           <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "220ms" }}>
             <div className="rp-card-head">
               <div>
                 <div className="rp-card-title">Search & Filters</div>
-                <div className="rp-card-sub">Invoice no • customer • status • code</div>
+                <div className="rp-card-sub">Invoice no • customer • status • code • date range</div>
               </div>
               <span className="rp-pill">{loading ? "Syncing…" : "Ready"}</span>
             </div>
@@ -454,6 +487,27 @@ export default function InvoicesPage() {
                   placeholder="Search invoice no, customer, status…"
                   style={{ flex: "1 1 280px" }}
                 />
+
+                {/* ✅ Date range filters (same design) */}
+                <input
+                  className="rp-input"
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  style={{ flex: "0 0 160px" }}
+                  title="From date"
+                />
+                <input
+                  className="rp-input"
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  style={{ flex: "0 0 160px" }}
+                  title="To date"
+                />
+                <button className="rp-seg-item" type="button" onClick={clearDates} disabled={!fromDate && !toDate}>
+                  Clear dates
+                </button>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {filterPills.map((p) => (
@@ -477,7 +531,6 @@ export default function InvoicesPage() {
             </div>
           </section>
 
-          {/* List */}
           <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "280ms" }}>
             <div className="rp-card-head rp-card-head--tight">
               <div>
