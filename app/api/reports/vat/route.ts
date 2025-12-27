@@ -9,6 +9,12 @@ function parseYmd(s: string) {
   return s;
 }
 
+function addDaysYmd(ymd: string, days: number) {
+  const d = new Date(ymd + "T00:00:00.000Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function monthRange(month: string) {
   const [yStr, mStr] = month.split("-");
   const y = Number(yStr);
@@ -19,15 +25,20 @@ function monthRange(month: string) {
   const to = new Date(Date.UTC(y, m, 1)); // exclusive
   return {
     fromStr: from.toISOString().slice(0, 10),
-    toStr: to.toISOString().slice(0, 10),
+    toExclusiveStr: to.toISOString().slice(0, 10),
   };
+}
+
+function getCustomerName(customers: any): string | null {
+  if (!customers) return null;
+  if (Array.isArray(customers)) return customers[0]?.name ?? null;
+  return customers?.name ?? null;
 }
 
 export async function GET(req: NextRequest) {
   try {
     const sp = req.nextUrl.searchParams;
 
-    // Optional filters
     const customerIdQ = sp.get("customerId");
     const salesRepQ = (sp.get("salesRep") || "").trim();
 
@@ -35,22 +46,23 @@ export async function GET(req: NextRequest) {
       customerIdQ && /^\d+$/.test(customerIdQ) ? Number(customerIdQ) : null;
     const salesRep = salesRepQ ? salesRepQ : null;
 
-    // Date range
     const fromQ = sp.get("from");
     const toQ = sp.get("to");
 
     let fromStr: string | null = null;
-    let toStr: string | null = null;
+    let toExclusiveStr: string | null = null;
 
     if (fromQ && toQ) {
       fromStr = parseYmd(fromQ);
-      toStr = parseYmd(toQ);
+      const toStr = parseYmd(toQ);
       if (!fromStr || !toStr) {
         return NextResponse.json(
           { ok: false, error: "Invalid from/to. Expected YYYY-MM-DD" },
           { status: 400 }
         );
       }
+      // ✅ make "to" inclusive by converting to exclusive +1 day
+      toExclusiveStr = addDaysYmd(toStr, 1);
     } else {
       const month = sp.get("month") || "";
       const range = monthRange(month);
@@ -58,14 +70,13 @@ export async function GET(req: NextRequest) {
         return NextResponse.json(
           {
             ok: false,
-            error:
-              "Provide month=YYYY-MM OR from=YYYY-MM-DD&to=YYYY-MM-DD",
+            error: "Provide month=YYYY-MM OR from=YYYY-MM-DD&to=YYYY-MM-DD",
           },
           { status: 400 }
         );
       }
       fromStr = range.fromStr;
-      toStr = range.toStr;
+      toExclusiveStr = range.toExclusiveStr;
     }
 
     let q = supabase
@@ -85,14 +96,13 @@ export async function GET(req: NextRequest) {
       `
       )
       .gte("invoice_date", fromStr)
-      .lt("invoice_date", toStr)
+      .lt("invoice_date", toExclusiveStr)
       .order("invoice_date", { ascending: true });
 
     if (customerId) q = q.eq("customer_id", customerId);
     if (salesRep) q = q.eq("sales_rep", salesRep);
 
     const { data, error } = await q;
-
     if (error) throw error;
 
     const invoices =
@@ -102,7 +112,7 @@ export async function GET(req: NextRequest) {
         invoice_date: r.invoice_date,
         customer_id: Number(r.customer_id),
         sales_rep: (r.sales_rep || "—").trim(),
-        customer_name: r.customers?.name ?? null,
+        customer_name: getCustomerName(r.customers),
         subtotal: Number(r.subtotal || 0),
         vat_amount: Number(r.vat_amount || 0),
         total_amount: Number(r.total_amount || 0),
@@ -121,7 +131,7 @@ export async function GET(req: NextRequest) {
     );
 
     const report = {
-      period: { from: fromStr, toExclusive: toStr },
+      period: { from: fromStr, toExclusive: toExclusiveStr },
       filters: { customerId, salesRep },
       totals: {
         subtotal: +totals.subtotal.toFixed(2),
