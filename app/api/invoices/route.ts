@@ -56,7 +56,9 @@ export async function POST(req: NextRequest) {
     const vatAmount = subtotal * (vatPercent / 100);
     const totalAmount = subtotal + vatAmount;
     const grossTotal = totalAmount + previousBalance;
-    const balanceRemaining = grossTotal - amountPaid;
+
+    // prevent negative balance if someone enters overpayment
+    const balanceRemaining = Math.max(0, grossTotal - amountPaid);
 
     // Generate invoice number
     const { data: lastInv, error: lastErr } = await supabase
@@ -98,7 +100,9 @@ export async function POST(req: NextRequest) {
         discount_percent: 0,
         discount_amount: 0,
 
-        status: "UNPAID",
+        // ✅ FIX: must match invoices_status_check constraint
+        // New invoices should be ISSUED (or DRAFT if you prefer)
+        status: "ISSUED",
 
         sales_rep: salesRep,
         sales_rep_phone: salesRepPhone,
