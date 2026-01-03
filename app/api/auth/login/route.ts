@@ -1,22 +1,23 @@
+// app/api/auth/login/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import { createClient } from "@supabase/supabase-js";
+import { hashPassword, verifyPassword, isBcryptHash } from "@/lib/passwords";
 
 export const dynamic = "force-dynamic";
 
+function supaAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url) throw new Error("Missing env: NEXT_PUBLIC_SUPABASE_URL");
+  if (!service) throw new Error("Missing env: SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(url, service, { auth: { persistSession: false } });
+}
+
 export async function POST(req: NextRequest) {
   try {
-    let body: any = null;
-
-    try {
-      body = await req.json();
-    } catch {
-      return NextResponse.json(
-        { ok: false, error: "Invalid request body" },
-        { status: 400 }
-      );
-    }
-
-    const { username, password } = body || {};
+    const body = await req.json().catch(() => null);
+    const username = String(body?.username || "").trim().toLowerCase();
+    const password = String(body?.password || "");
 
     if (!username || !password) {
       return NextResponse.json(
@@ -25,12 +26,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fetch user
-    const { data: user, error } = await supabase
+    const supabaseAdmin = supaAdmin();
+
+    const { data: user, error } = await supabaseAdmin
       .from("rp_users")
-      .select("id, username, password, role, permissions, is_active")
+      .select("id, username, password_hash, role, permissions, is_active")
       .eq("username", username)
-      .maybeSingle();
+      .limit(1)
+      .single();
 
     if (error) {
       console.error("Supabase login error:", error);
@@ -40,7 +43,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!user || user.password !== password) {
+    if (!user) {
       return NextResponse.json(
         { ok: false, error: "Invalid username or password." },
         { status: 401 }
@@ -54,7 +57,33 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // STANDARDIZED session object
+    const stored = String(user.password_hash || "");
+    let ok = false;
+
+    if (isBcryptHash(stored)) {
+      ok = await verifyPassword(password, stored);
+    } else {
+      // Legacy plaintext stored in password_hash (your current state)
+      ok = stored === password;
+
+      // ✅ Auto-upgrade to bcrypt after successful login
+      if (ok) {
+        const newHash = await hashPassword(password);
+        const { error: upErr } = await supabaseAdmin
+          .from("rp_users")
+          .update({ password_hash: newHash })
+          .eq("id", user.id);
+        if (upErr) console.error("Password hash upgrade failed:", upErr);
+      }
+    }
+
+    if (!ok) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid username or password." },
+        { status: 401 }
+      );
+    }
+
     const session = {
       id: user.id,
       username: user.username,
@@ -67,13 +96,14 @@ export async function POST(req: NextRequest) {
     res.cookies.set("rp_session", JSON.stringify(session), {
       httpOnly: true,
       sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 60 * 60 * 8, // 8 hours
+      maxAge: 60 * 60 * 8,
     });
 
     return res;
-  } catch (err) {
-    console.error("Unexpected error in /api/auth/login:", err);
+  } catch (err: any) {
+    console.error("Unexpected login error:", err);
     return NextResponse.json(
       { ok: false, error: "Unexpected server error." },
       { status: 500 }

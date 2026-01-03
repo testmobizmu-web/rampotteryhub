@@ -8,23 +8,29 @@ function nextInvoiceNumber(lastId: number | null): string {
 
 export async function POST(
   _req: NextRequest,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> } // ✅ REQUIRED for this route
 ) {
   try {
-    const { id: rawId } = await context.params; // ✅ Next.js 16 expects Promise params
+    const { id: rawId } = await context.params; // ✅ REQUIRED for this route
 
-    // Try numeric first, fall back to invoice_number
     const numericId = Number(rawId);
-    const useNumeric = !Number.isNaN(numericId);
+    const useNumeric = Number.isFinite(numericId);
 
     // 1) Load original invoice
     const { data: invoice, error: invError } = await supabase
       .from("invoices")
       .select(
         `
-        id, customer_id, invoice_number, invoice_date,
-        subtotal, vat_amount, total_amount,
-        vat_percent, discount_percent, discount_amount
+        id,
+        customer_id,
+        invoice_number,
+        invoice_date,
+        subtotal,
+        vat_amount,
+        total_amount,
+        vat_percent,
+        discount_percent,
+        discount_amount
       `
       )
       .eq(useNumeric ? "id" : "invoice_number", useNumeric ? numericId : rawId)
@@ -32,39 +38,41 @@ export async function POST(
 
     if (invError || !invoice) {
       return NextResponse.json(
-        {
-          ok: false,
-          error: `Original invoice not found for identifier "${rawId}".`,
-        },
+        { ok: false, error: `Original invoice not found for "${rawId}"` },
         { status: 404 }
       );
     }
 
-    // 2) Load items
+    // 2) Load items (include UOM + pcs_qty)
     const { data: items, error: itemsError } = await supabase
       .from("invoice_items")
       .select(
-        "product_id, box_qty, units_per_box, total_qty, unit_price_excl_vat, unit_vat, unit_price_incl_vat, line_total"
+        `
+        product_id,
+        uom,
+        box_qty,
+        pcs_qty,
+        units_per_box,
+        total_qty,
+        unit_price_excl_vat,
+        unit_vat,
+        unit_price_incl_vat,
+        line_total
+      `
       )
       .eq("invoice_id", invoice.id);
 
     if (itemsError) throw itemsError;
 
-    // 3) Find last invoice id to generate new number
-    const { data: lastInv, error: lastErr } = await supabase
+    // 3) Generate new invoice number
+    const { data: lastInv } = await supabase
       .from("invoices")
       .select("id")
       .order("id", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (lastErr) throw lastErr;
-
     const invoiceNumber = nextInvoiceNumber(lastInv?.id ?? null);
-
-    const previous_balance = 0;
-    const amount_paid = 0;
-    const balance_remaining = invoice.total_amount;
 
     // 4) Insert new invoice
     const { data: newInv, error: newInvError } = await supabase
@@ -76,9 +84,9 @@ export async function POST(
         subtotal: invoice.subtotal,
         vat_amount: invoice.vat_amount,
         total_amount: invoice.total_amount,
-        previous_balance,
-        amount_paid,
-        balance_remaining,
+        previous_balance: 0,
+        amount_paid: 0,
+        balance_remaining: invoice.total_amount,
         status: "UNPAID",
         vat_percent: invoice.vat_percent,
         discount_percent: invoice.discount_percent,
@@ -89,23 +97,21 @@ export async function POST(
 
     if (newInvError || !newInv) throw newInvError;
 
-    const newId = newInv.id;
-
-    // 5) Clone items to new invoice
-    if (items && items.length) {
-      const clonedItems = items.map((it: any) => ({
+    // 5) Clone items (NO stock movement)
+    if (items?.length) {
+      const clonedItems = items.map((it) => ({
         ...it,
-        invoice_id: newId,
+        invoice_id: newInv.id,
       }));
 
-      const { error: insItemsErr } = await supabase
+      const { error: insErr } = await supabase
         .from("invoice_items")
         .insert(clonedItems);
 
-      if (insItemsErr) throw insItemsErr;
+      if (insErr) throw insErr;
     }
 
-    return NextResponse.json({ ok: true, invoiceId: newId });
+    return NextResponse.json({ ok: true, invoiceId: newInv.id });
   } catch (err: any) {
     console.error(err);
     return NextResponse.json(

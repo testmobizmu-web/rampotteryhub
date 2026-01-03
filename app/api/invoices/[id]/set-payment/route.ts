@@ -1,16 +1,15 @@
-// app/api/invoices/[id]/set-payment/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
 export async function PATCH(
   req: NextRequest,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> } // ✅ REQUIRED
 ) {
   try {
-    const { id } = await context.params;
+    const { id } = await context.params; // ✅ REQUIRED
 
     const numericId = Number(id);
-    const useNumeric = !Number.isNaN(numericId);
+    const useNumeric = Number.isFinite(numericId);
 
     const body = await req.json().catch(() => ({}));
     const amountPaidInput = Number(body?.amountPaid ?? 0);
@@ -22,7 +21,7 @@ export async function PATCH(
       );
     }
 
-    // Load invoice totals
+    // 1) Load invoice totals
     const { data: inv, error: invErr } = await supabase
       .from("invoices")
       .select("id, total_amount, gross_total, previous_balance")
@@ -37,9 +36,10 @@ export async function PATCH(
     }
 
     const total = Number(inv.total_amount || 0);
-    const gross = Number(inv.gross_total || total);
+    const gross =
+      inv.gross_total != null ? Number(inv.gross_total) : total;
 
-    // clamp paid between 0 and gross
+    // 2) Clamp paid between 0 and gross
     const paid = Math.max(0, Math.min(gross, amountPaidInput));
     const balance = +(gross - paid).toFixed(2);
 
@@ -48,6 +48,7 @@ export async function PATCH(
     else if (paid >= gross) status = "PAID";
     else status = "PARTIAL";
 
+    // 3) Update invoice
     const { error: upErr } = await supabase
       .from("invoices")
       .update({

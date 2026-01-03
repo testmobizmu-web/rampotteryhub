@@ -4,13 +4,13 @@ import { supabase } from "@/lib/supabaseClient";
 
 export async function PATCH(
   _req: NextRequest,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> } // ✅ REQUIRED for nested route
 ) {
   try {
-    const { id } = await context.params;
+    const { id } = await context.params; // ✅ REQUIRED
 
     const numericId = Number(id);
-    const useNumeric = !Number.isNaN(numericId);
+    const useNumeric = Number.isFinite(numericId);
 
     // Load invoice to compute paid values safely
     const { data: inv, error: invErr } = await supabase

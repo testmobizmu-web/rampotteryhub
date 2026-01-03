@@ -1,3 +1,4 @@
+// app/api/pricing/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
     const supabase = supaAdmin();
     const { data, error } = await supabase
       .from("customer_product_prices")
-      .select("customer_id, product_id, price_excl_vat")
+      .select("customer_id, product_id, unit_price_excl_vat")
       .eq("customer_id", customerId);
 
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
@@ -51,18 +52,19 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as any;
     const customerId = Number(body?.customerId || 0);
     const productId = Number(body?.productId || 0);
-    const priceExclVat = Number(body?.priceExclVat);
+    const unitPriceExclVat = Number(body?.unitPriceExclVat);
 
-    if (!customerId || !productId || !Number.isFinite(priceExclVat) || priceExclVat <= 0) {
+    if (!customerId || !productId || !Number.isFinite(unitPriceExclVat) || unitPriceExclVat < 0) {
       return NextResponse.json({ ok: false, error: "Invalid payload" }, { status: 400 });
     }
 
     const supabase = supaAdmin();
     const { error } = await supabase
       .from("customer_product_prices")
-      .upsert([{ customer_id: customerId, product_id: productId, price_excl_vat: priceExclVat }] as any, {
-        onConflict: "customer_id,product_id",
-      });
+      .upsert(
+        [{ customer_id: customerId, product_id: productId, unit_price_excl_vat: unitPriceExclVat }] as any,
+        { onConflict: "customer_id,product_id" }
+      );
 
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
@@ -98,4 +100,6 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
   }
 }
+
+
 

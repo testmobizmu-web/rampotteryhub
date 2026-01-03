@@ -3,363 +3,251 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import LogoutButton from "../components/auth/LogoutButton";
+import { rpFetch } from "@/lib/rpFetch";
 
-/* ---------------- types ---------------- */
-type SessionUser = {
-  id: number | string;
-  username: string;
-  role?: string;
-  permissions?: Record<string, any>;
-};
-
-type RecentInvoice = {
-  id: number;
-  invoice_number: string;
-  invoice_date: string;
-  total_amount: number;
-  status: string;
-  customers?: { name?: string } | null;
+type LowStockItem = {
+  id?: number | string;
+  item_code?: string | null;
+  name?: string | null;
+  qty?: number | null;
+  stock_qty?: number | null;
+  min_qty?: number | null;
+  uom?: string | null;
 };
 
 type DashboardSummary = {
   totalSalesToday: number;
   totalSalesMonth: number;
   outstanding: number;
-  lowStock: Array<{
-    id: number;
-    sku: string | null;
-    name: string | null;
-    current_stock: number | null;
-    reorder_level: number | null;
+  lowStock: LowStockItem[];
+  recentInvoices: Array<{
+    id: number | string;
+    invoice_number?: string | null;
+    invoice_date?: string | null;
+    total_amount?: number | null;
+    status?: string | null;
+    customers?: { name?: string | null } | null;
   }>;
-  recentInvoices: RecentInvoice[];
-  monthlyLabels: string[];
-  monthlyValues: number[];
-  customerLabels: string[];
-  customerValues: number[];
-  creditNotesTotal: number;
 };
 
-/* ---------------- utils ---------------- */
+type RpSession = {
+  id?: string;
+  username?: string;
+  name?: string;
+  role?: string;
+};
+
 function formatRs(n: number) {
-  const val = Number.isFinite(n) ? n : 0;
-  return `Rs ${val.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  const v = Number.isFinite(n) ? n : 0;
+  return `Rs ${v.toFixed(2)}`;
 }
 
-function formatDate(d: string) {
-  if (!d) return "-";
-  try {
-    const dt = new Date(d);
-    return dt.toLocaleDateString("en-GB"); // dd/mm/yyyy
-  } catch {
-    return d;
-  }
+function fmtDateTime(d: Date) {
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function statusMeta(statusRaw: string) {
-  const s = (statusRaw || "").toUpperCase().trim();
-
-  if (s === "PAID") return { label: "PAID", className: "rp-badge rp-badge--paid" };
-  if (s === "PARTIALLY_PAID" || s === "PARTIAL")
-    return { label: "PARTIALLY PAID", className: "rp-badge rp-badge--partial" };
-  if (s === "ISSUED") return { label: "ISSUED", className: "rp-badge rp-badge--issued" };
-  if (s === "VOID" || s === "VOIDED") return { label: "VOID", className: "rp-badge rp-badge--void" };
-  if (s === "REFUNDED") return { label: "REFUNDED", className: "rp-badge rp-badge--refund" };
-
-  return { label: s || "UNKNOWN", className: "rp-badge rp-badge--neutral" };
+function normalizeStatus(s?: string | null) {
+  const v = (s || "").toLowerCase();
+  if (v.includes("paid")) return "paid";
+  if (v.includes("partial")) return "partial";
+  if (v.includes("void") || v.includes("cancel")) return "void";
+  if (v.includes("refund")) return "refund";
+  return v || "issued";
 }
 
-/* ---------------- lightweight SVG charts (no deps) ---------------- */
-function BarChartSvg({ labels, values }: { labels: string[]; values: number[] }) {
-  const max = Math.max(1, ...values.map((v) => (Number.isFinite(v) ? v : 0)));
-  const n = Math.max(1, values.length);
+function StatusBadge({ status }: { status?: string | null }) {
+  const st = normalizeStatus(status);
+  const cls =
+    st === "paid"
+      ? "rp-badge rp-badge--paid"
+      : st === "partial"
+      ? "rp-badge rp-badge--partial"
+      : st === "void"
+      ? "rp-badge rp-badge--void"
+      : st === "refund"
+      ? "rp-badge rp-badge--refund"
+      : "rp-badge rp-badge--issued";
 
-  const W = 980;
-  const H = 300;
-  const padL = 64;
-  const padR = 18;
-  const padT = 18;
-  const padB = 52;
+  const label =
+    st === "paid"
+      ? "Paid"
+      : st === "partial"
+      ? "Partial"
+      : st === "void"
+      ? "Void"
+      : st === "refund"
+      ? "Refund"
+      : "Issued";
 
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
-
-  const step = innerW / n;
-  const barW = Math.max(12, Math.min(56, step * 0.55));
-
-  const ticks = 4;
-  const tickVals = Array.from({ length: ticks + 1 }, (_, i) => (max * i) / ticks);
-
-  return (
-    <div className="rp-chart">
-      <svg viewBox={`0 0 ${W} ${H}`} className="rp-svg" role="img" aria-label="Monthly sales bar chart">
-        {tickVals.map((tv, i) => {
-          const y = padT + innerH - (tv / max) * innerH;
-          return (
-            <g key={i}>
-              <line x1={padL} y1={y} x2={W - padR} y2={y} className="rp-gridline" />
-              <text x={padL - 12} y={y + 4} textAnchor="end" className="rp-axis">
-                {tv === 0 ? "0" : `Rs ${Math.round(tv).toLocaleString("en-US")}`}
-              </text>
-            </g>
-          );
-        })}
-
-        {values.map((v, i) => {
-          const val = Number.isFinite(v) ? v : 0;
-          const h = (val / max) * innerH;
-          const x = padL + i * step + (step - barW) / 2;
-          const y = padT + innerH - h;
-          return (
-            <g key={i}>
-              <rect x={x} y={y} width={barW} height={h} rx={12} className="rp-bar" />
-              <text x={padL + i * step + step / 2} y={H - 20} textAnchor="middle" className="rp-axis">
-                {labels[i] || "-"}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-
-      <div className="rp-chart-note">
-        <span className="rp-dot" />
-        Monthly Sales (Rs)
-      </div>
-    </div>
-  );
+  return <span className={cls}>{label}</span>;
 }
 
-function DonutChartSvg({ labels, values }: { labels: string[]; values: number[] }) {
-  const safe = values.map((v) => (Number.isFinite(v) ? Math.max(0, v) : 0));
-  const total = safe.reduce((a, b) => a + b, 0) || 1;
-
-  const size = 340;
-  const cx = size / 2;
-  const cy = size / 2;
-  const r = 120;
-  const stroke = 26;
-  const C = 2 * Math.PI * r;
-
-  let acc = 0;
-
-  const top = (() => {
-    let bestIdx = 0;
-    let best = -1;
-    safe.forEach((v, i) => {
-      if (v > best) {
-        best = v;
-        bestIdx = i;
-      }
-    });
-    return { name: labels[bestIdx] || "—", value: safe[bestIdx] || 0 };
-  })();
-
-  return (
-    <div className="rp-donut-wrap">
-      <div className="rp-donut">
-        <svg viewBox={`0 0 ${size} ${size}`} className="rp-svg" role="img" aria-label="Sales by customer donut chart">
-          <circle cx={cx} cy={cy} r={r} fill="none" strokeWidth={stroke} className="rp-donut-track" />
-
-          {safe.map((v, i) => {
-            const frac = v / total;
-            const dash = frac * C;
-            const gap = C - dash;
-
-            const offset = C * 0.25 - acc * C;
-            acc += frac;
-
-            const cls = `rp-donut-slice rp-donut-slice--${(i % 5) + 1}`;
-
-            return (
-              <circle
-                key={i}
-                cx={cx}
-                cy={cy}
-                r={r}
-                fill="none"
-                strokeWidth={stroke}
-                strokeLinecap="round"
-                className={cls}
-                strokeDasharray={`${dash} ${gap}`}
-                strokeDashoffset={offset}
-              />
-            );
-          })}
-
-          <circle cx={cx} cy={cy} r={r - stroke / 2 - 12} className="rp-donut-center" />
-          <text x={cx} y={cy - 10} textAnchor="middle" className="rp-donut-title">
-            Top Customer
-          </text>
-          <text x={cx} y={cy + 18} textAnchor="middle" className="rp-donut-value">
-            {top.name}
-          </text>
-          <text x={cx} y={cy + 44} textAnchor="middle" className="rp-donut-sub">
-            {formatRs(top.value)}
-          </text>
-        </svg>
-      </div>
-
-      <div className="rp-legend">
-        {safe.map((v, i) => (
-          <div key={i} className="rp-legend-item">
-            <span className={`rp-legend-dot rp-legend-dot--${(i % 5) + 1}`} />
-            <div className="rp-legend-text">
-              <div className="rp-legend-name">{labels[i] || "Unknown"}</div>
-              <div className="rp-legend-val">{formatRs(v)}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+function rolePretty(role?: string) {
+  const r = String(role || "STAFF").toUpperCase();
+  if (r === "STAFF") return "STAFF";
+  if (r === "ADMIN") return "ADMIN";
+  if (r === "MANAGER") return "MANAGER";
+  return r;
 }
 
-/* ---------------- page ---------------- */
+function isAdminRole(role?: string) {
+  return String(role || "").toUpperCase() === "ADMIN";
+}
+
+function lowQty(item: LowStockItem) {
+  const q = item.qty ?? item.stock_qty ?? 0;
+  return Number.isFinite(Number(q)) ? Number(q) : 0;
+}
+
 export default function DashboardPage() {
-  const router = useRouter();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [lastSync, setLastSync] = useState<string>("");
 
-  const [session, setSession] = useState<SessionUser | null>(null);
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<DashboardSummary | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  const [dark, setDark] = useState(false);
-  const [lastSync, setLastSync] = useState<string>("—");
+  // ✅ SSR-safe session: start null, then read localStorage after mount
+  const [mounted, setMounted] = useState(false);
+  const [session, setSession] = useState<RpSession | null>(null);
 
-  /* ✅ MOBILE DRAWER STATE */
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
-
-  // lock background scroll when drawer is open
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.body.style.overflow = mobileNavOpen ? "hidden" : "";
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [mobileNavOpen]);
+    setMounted(true);
 
-  // close on ESC
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileNavOpen(false);
+    // theme
+    const saved = localStorage.getItem("rp_theme");
+    const initial = saved === "dark" ? "dark" : "light";
+    setTheme(initial);
+    document.documentElement.dataset.theme = initial;
+
+    // session
+    try {
+      const raw = localStorage.getItem("rp_user");
+      if (raw) setSession(JSON.parse(raw));
+    } catch {
+      setSession(null);
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // theme init
-  useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("rp_theme") : null;
-    const isDark = saved === "dark";
-    setDark(isDark);
-    document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
-  }, []);
+  const roleLabel = useMemo(() => rolePretty(session?.role), [session]);
+  const userLabel = useMemo(() => {
+    const name = (session?.name || session?.username || "").trim();
+    return name ? name : "User";
+  }, [session]);
 
-  // session guard + summary load
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-
-      try {
-        const s1 = await fetch("/api/session", { cache: "no-store" })
-          .then((r) => r.json())
-          .catch(() => ({ ok: false }));
-
-        if (!s1?.ok) {
-          router.replace("/login");
-          return;
-        }
-
-        if (!cancelled) setSession(s1.session);
-
-        const s2 = await fetch("/api/dashboard/summary", { cache: "no-store" })
-          .then((r) => r.json())
-          .catch(() => null);
-
-        if (!cancelled) setSummary(s2);
-
-        const now = new Date();
-        if (!cancelled) {
-          setLastSync(
-            now.toLocaleString("en-GB", {
-              day: "2-digit",
-              month: "2-digit",
-              year: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-            })
-          );
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [router]);
-
-  const roleLabel = useMemo(() => {
-    const r = (session?.role || "").toUpperCase().trim();
-    return r || "UNKNOWN";
-  }, [session?.role]);
-
-  const monthlyLabels = summary?.monthlyLabels || [];
-  const monthlyValues = summary?.monthlyValues || [];
-  const customerLabels = summary?.customerLabels || [];
-  const customerValues = summary?.customerValues || [];
-
-  const kpiSalesToday = summary?.totalSalesToday ?? 0;
-  const kpiSalesMonth = summary?.totalSalesMonth ?? 0;
-  const kpiOutstanding = summary?.outstanding ?? 0;
-  const kpiLowStock = (summary?.lowStock || []).length;
+  // ✅ only compute admin after mounted so server/client trees match
+  const canSeeAdminNav = mounted && isAdminRole(session?.role);
 
   function toggleTheme() {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.setAttribute("data-theme", next ? "dark" : "light");
-    localStorage.setItem("rp_theme", next ? "dark" : "light");
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("rp_theme", next);
   }
 
-  // Prevent UI flicker before redirect
-  if (loading) {
-    return <div style={{ padding: 20 }}>Loading…</div>;
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      localStorage.removeItem("rp_user");
+      window.location.href = "/login";
+    }
   }
-  if (!session) {
-    return null;
-  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        setLoading(true);
+        setErr(null);
+
+        const res = await rpFetch("/api/dashboard/summary", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+           let msg = "";
+           try {
+            const j = await res.json();
+            msg = j?.error || j?.message || "";
+           } catch {
+            msg = await res.text().catch(() => "");
+           }
+            throw new Error(msg || `Dashboard load failed (${res.status})`);
+           }
+
+        const json = (await res.json()) as DashboardSummary;
+        setData(json);
+        setLastSync(fmtDateTime(new Date()));
+      } catch (e: any) {
+        if (controller.signal.aborted) return;
+        setErr(e?.message || "Failed to load dashboard");
+      } finally {
+        if (controller.signal.aborted) return;
+        setLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, []);
+
+  const salesToday = data?.totalSalesToday ?? 0;
+  const salesMonth = data?.totalSalesMonth ?? 0;
+  const outstanding = data?.outstanding ?? 0;
+  const lowStockItems = Array.isArray(data?.lowStock) ? data!.lowStock : [];
+  const lowStockCount = lowStockItems.length;
+
+  const recent = data?.recentInvoices ?? [];
+
+  const lowStockTop = useMemo(() => {
+    const copy = [...lowStockItems];
+    copy.sort((a, b) => lowQty(a) - lowQty(b));
+    return copy.slice(0, 6);
+  }, [lowStockItems]);
+
+  // ✅ Stable base nav (same on server and first client render)
+  const baseNav = [
+    { href: "/", label: "Dashboard" },
+    { href: "/invoices", label: "Invoices" },
+    { href: "/credit-notes", label: "Credit Notes" },
+    { href: "/stock", label: "Stock & Categories" },
+    { href: "/stock-movements", label: "Stock Movements" },
+    { href: "/customers", label: "Customers" },
+    { href: "/reports", label: "Reports & Statements" },
+  ];
+
+  // ✅ Admin nav appended ONLY after mount to avoid hydration mismatch
+  const navItems = useMemo(() => {
+    const list = [...baseNav];
+    if (canSeeAdminNav) list.push({ href: "/admin/users", label: "Users & Permissions" });
+    return list;
+  }, [canSeeAdminNav]);
 
   return (
     <div className="rp-app">
-      {/* animated luxury background */}
       <div className="rp-bg" aria-hidden="true">
-        <span className="rp-bg-orb rp-bg-orb--1" />
-        <span className="rp-bg-orb rp-bg-orb--2" />
-        <span className="rp-bg-orb rp-bg-orb--3" />
-        <span className="rp-bg-grid" />
+        <div className="rp-bg-orb rp-bg-orb--1" />
+        <div className="rp-bg-orb rp-bg-orb--2" />
+        <div className="rp-bg-orb rp-bg-orb--3" />
+        <div className="rp-bg-grid" />
       </div>
 
       <div className="rp-shell rp-enter">
-        {/* ===== MOBILE TOP BAR ===== */}
+        {/* Mobile top bar */}
         <div className="rp-mtop">
           <button
             type="button"
-            className="rp-icon-btn"
+            className="rp-icon-btn rp-burger"
+            onClick={() => setDrawerOpen(true)}
             aria-label="Open menu"
-            aria-expanded={mobileNavOpen}
-            onClick={() => setMobileNavOpen(true)}
           >
-            <span className="rp-burger" aria-hidden="true">
+            <span aria-hidden="true">
               <i />
               <i />
               <i />
@@ -367,422 +255,346 @@ export default function DashboardPage() {
           </button>
 
           <div className="rp-mtop-brand">
-            <div className="rp-mtop-title">RamPotteryHub</div>
+            <div className="rp-mtop-title">RampotteryHUB</div>
             <div className="rp-mtop-sub">Accounting & Stock</div>
           </div>
 
-          <button type="button" className="rp-icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
-            {dark ? "☀️" : "🌙"}
+          <button type="button" className="rp-icon-btn" onClick={toggleTheme} aria-label="Toggle theme" title="Toggle theme">
+            {theme === "dark" ? "☀" : "🌙"}
           </button>
         </div>
 
-        {/* ===== MOBILE OVERLAY ===== */}
+        {/* Overlay + Drawer */}
         <button
-          type="button"
-          className={`rp-overlay ${mobileNavOpen ? "is-open" : ""}`}
+          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
+          onClick={() => setDrawerOpen(false)}
           aria-label="Close menu"
-          onClick={() => setMobileNavOpen(false)}
         />
-
-        {/* ===== MOBILE DRAWER (same sidebar content) ===== */}
-        <aside className={`rp-drawer ${mobileNavOpen ? "is-open" : ""}`} aria-label="Mobile navigation">
+        <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
               <div className="rp-drawer-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Ltd"
-                  width={40}
-                  height={40}
-                  priority
-                  style={{ width: 40, height: 40, objectFit: "contain" }}
-                />
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={28} height={28} priority />
               </div>
               <div>
-                <div className="rp-drawer-title">Ram Pottery Ltd</div>
-                <div className="rp-drawer-sub">Online Accounting & Stock</div>
+                <div className="rp-drawer-title">RampotteryHUB</div>
+                <div className="rp-drawer-sub">Accounting & Stock System</div>
               </div>
             </div>
 
-            <button
-              type="button"
-              className="rp-icon-btn"
-              onClick={() => setMobileNavOpen(false)}
-              aria-label="Close menu"
-            >
+            <button type="button" className="rp-icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close">
               ✕
             </button>
           </div>
 
-          {/* clicking a nav item closes drawer */}
-          <nav className="rp-nav" onClick={() => setMobileNavOpen(false)}>
-            <Link className="rp-nav-btn rp-nav-btn--active" href="/">
-              Dashboard
-            </Link>
-            <Link className="rp-nav-btn" href="/invoices">
-              Invoices
-            </Link>
-            <Link className="rp-nav-btn" href="/credit-notes">
-              Credit Notes
-            </Link>
-            <Link className="rp-nav-btn" href="/products">
-              Stock & Categories
-            </Link>
-            <Link className="rp-nav-btn" href="/stock-movements">
-              Stock Movements
-            </Link>
-            <Link className="rp-nav-btn" href="/customers">
-              Customers
-            </Link>
-            <Link className="rp-nav-btn" href="/suppliers">
-              Suppliers
-            </Link>
-            <Link className="rp-nav-btn" href="/reports">
-              Reports & Statements
-            </Link>
-            <Link className="rp-nav-btn" href="/admin/users">
-              Users & Permissions
-            </Link>
-          </nav>
+          <div className="rp-drawer-body">
+            <nav className="rp-nav">
+              {navItems.map((n) => (
+                <Link
+                  key={n.href}
+                  className={`rp-nav-btn ${n.href === "/" ? "rp-nav-btn--active" : ""}`}
+                  href={n.href}
+                  onClick={() => setDrawerOpen(false)}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">▶</span>
+                  {n.label}
+                </Link>
+              ))}
+            </nav>
 
-          <div className="rp-side-footer">
-            <div className="rp-role">
-              <span>Role</span>
-              <b>{roleLabel}</b>
+            <div className="rp-side-footer rp-side-footer--in">
+              <div className="rp-role">
+                <span>Signed in</span>
+                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{mounted ? roleLabel : "—"}</b>
+              </div>
             </div>
           </div>
         </aside>
 
-        {/* ===== DESKTOP SIDEBAR (unchanged) ===== */}
+        {/* Desktop sidebar */}
         <aside className="rp-side">
           <div className="rp-side-card rp-card-anim">
             <div className="rp-brand">
               <div className="rp-brand-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Ltd"
-                  width={44}
-                  height={44}
-                  priority
-                  style={{ width: 44, height: 44, objectFit: "contain" }}
-                />
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
               </div>
-              <div className="rp-brand-text">
-                <div className="rp-brand-title">Ram Pottery Ltd</div>
-                <div className="rp-brand-sub">Online Accounting & Stock Manager</div>
+              <div>
+                <div className="rp-brand-title">RampotteryHUB</div>
+                <div className="rp-brand-sub">Accounting & Stock System</div>
               </div>
             </div>
 
             <nav className="rp-nav">
-              <Link className="rp-nav-btn rp-nav-btn--active" href="/">
-                Dashboard
-              </Link>
-              <Link className="rp-nav-btn" href="/invoices">
-                Invoices
-              </Link>
-              <Link className="rp-nav-btn" href="/credit-notes">
-                Credit Notes
-              </Link>
-              <Link className="rp-nav-btn" href="/products">
-                Stock & Categories
-              </Link>
-              <Link className="rp-nav-btn" href="/stock-movements">
-                Stock Movements
-              </Link>
-              <Link className="rp-nav-btn" href="/customers">
-                Customers
-              </Link>
-              <Link className="rp-nav-btn" href="/suppliers">
-                Suppliers
-              </Link>
-              <Link className="rp-nav-btn" href="/reports">
-                Reports & Statements
-              </Link>
-              <Link className="rp-nav-btn" href="/admin/users">
-                Users & Permissions
-              </Link>
+              {navItems.map((n) => (
+                <Link key={n.href} className={`rp-nav-btn ${n.href === "/" ? "rp-nav-btn--active" : ""}`} href={n.href}>
+                  <span className="rp-ic3d" aria-hidden="true">▶</span>
+                  {n.label}
+                </Link>
+              ))}
             </nav>
 
-            <div className="rp-side-footer">
+            <div className="rp-side-footer rp-side-footer--in">
               <div className="rp-role">
+                <span>Signed in</span>
+                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
                 <span>Role</span>
-                <b>{roleLabel}</b>
+                <b>{mounted ? roleLabel : "—"}</b>
               </div>
             </div>
           </div>
         </aside>
 
-        {/* MAIN */}
+        {/* Main */}
         <main className="rp-main">
-          <div className="rp-top rp-card-anim" style={{ animationDelay: "60ms" }}>
-            <div className="rp-title">
-              <div className="rp-eyebrow">
-                <span className="rp-tag">Secure • Cloud</span>
-                <span className="rp-tag">VAT 15%</span>
-              </div>
-              <h1>RamPotteryHub</h1>
-              <p>Accounting & stock — premium overview</p>
-            </div>
+          <header className="rp-top rp-top--saas rp-card-anim" style={{ animationDelay: "60ms" }}>
+            <div className="rp-top-left--actions">
+              <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={toggleTheme} title="Toggle theme">
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                {theme === "dark" ? "☀ Light" : "🌙 Dark"}
+              </button>
 
-            <div className="rp-top-right">
-              <div className="rp-sync">
-                <div className="rp-sync-label">Last sync</div>
-                <div className="rp-sync-time">{lastSync}</div>
-             <LogoutButton />
-           </div>
-
-              <button type="button" className="rp-theme-btn" onClick={toggleTheme}>
-                {dark ? "☀️ Light" : "🌙 Dark"}
+              <button type="button" className="rp-ui-btn rp-ui-btn--danger" onClick={handleLogout} title="Logout">
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                Log Out
               </button>
             </div>
-          </div>
 
-          {/* segmented quick actions */}
-          <div className="rp-actions rp-card-anim" style={{ animationDelay: "120ms" }}>
-            <div className="rp-seg">
-              <Link className="rp-seg-item rp-seg-item--primary" href="/invoices/new">
-                + New Invoice
+            <div className="rp-top-center--logo">
+              <div className="rp-top-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} priority />
+              </div>
+            </div>
+
+            <div className="rp-top-right--sync">
+              <div className="rp-sync">
+                <div className="rp-sync-label">Last sync :</div>
+                <div className="rp-sync-time">{lastSync || "—"}</div>
+              </div>
+            </div>
+          </header>
+
+          <section className="rp-exec rp-card-anim">
+            <div className="rp-exec__left">
+              <div className="rp-exec__title">Executive Overview</div>
+              <div className="rp-exec__sub">Fast overview + operational alerts</div>
+            </div>
+            <div className="rp-exec__right">
+              <span className={`rp-live ${loading ? "is-dim" : ""}`}>
+                <span className="rp-live-dot" aria-hidden="true" />
+                {loading ? "Syncing" : "Live"}
+              </span>
+              <span className={`rp-chip rp-chip--soft ${err ? "rp-chip--warn" : ""}`}>
+                {err ? "Attention needed" : "All systems normal"}
+              </span>
+            </div>
+          </section>
+
+          <section className="rp-actions rp-card-anim">
+            <div className="rp-seg rp-seg--pro">
+              <Link className="rp-seg-item rp-seg-item--brand" href="/invoices/new">
+                <span className="rp-icbtn" aria-hidden="true">🧾</span>
+                New Invoice
               </Link>
-              <Link className="rp-seg-item" href="/invoices">
-                Reprint / View Invoices
+              <Link className="rp-seg-item rp-seg-item--brand" href="/invoices">
+                <span className="rp-icbtn" aria-hidden="true">🖨️</span>
+                Reprint Invoices
               </Link>
-              <Link className="rp-seg-item" href="/credit-notes">
+              <Link className="rp-seg-item rp-seg-item--brand" href="/credit-notes">
+                <span className="rp-icbtn" aria-hidden="true">🧾</span>
                 Credit Notes
               </Link>
-              <Link className="rp-seg-item" href="/products/import">
-                Import Stock Excel
+              <Link className="rp-seg-item rp-seg-item--brand" href="/stock">
+                <span className="rp-icbtn" aria-hidden="true">📦</span>
+                Import Stock
               </Link>
-              <Link className="rp-seg-item" href="/customers">
-                Customers
-              </Link>
-            </div>
-          </div>
-
-          {/* KPIs */}
-          <section className="rp-kpis rp-card-anim" style={{ animationDelay: "180ms" }}>
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">₹</span>
-                <span className="rp-kpi-title">Sales Today</span>
-              </div>
-              <div className="rp-kpi-val">{formatRs(kpiSalesToday)}</div>
-              <div className="rp-kpi-sub">Invoices dated today</div>
-            </div>
-
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">↗</span>
-                <span className="rp-kpi-title">Sales This Month</span>
-              </div>
-              <div className="rp-kpi-val">{formatRs(kpiSalesMonth)}</div>
-              <div className="rp-kpi-sub">Month-to-date</div>
-            </div>
-
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">!</span>
-                <span className="rp-kpi-title">Outstanding</span>
-              </div>
-              <div className="rp-kpi-val">{formatRs(kpiOutstanding)}</div>
-              <div className="rp-kpi-sub">Total balance due</div>
-            </div>
-
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">✓</span>
-                <span className="rp-kpi-title">Low Stock</span>
-              </div>
-              <div className="rp-kpi-val">{kpiLowStock}</div>
-              <div className="rp-kpi-sub">Reorder suggested</div>
             </div>
           </section>
 
-          {/* GRID */}
-          <section className="rp-grid rp-card-anim" style={{ animationDelay: "240ms" }}>
-            {/* LEFT STACK */}
-            <div className="rp-col rp-col--wide">
-              <section className="rp-card rp-glass">
-                <header className="rp-card-head">
-                  <div>
-                    <div className="rp-card-title">Sales — Last 6 Months</div>
-                    <div className="rp-card-sub">Monthly totals (Rs)</div>
-                  </div>
-                  <span className="rp-pill">Bar</span>
-                </header>
+          <section className="rp-kpi-pro rp-card-anim">
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Sales Today</div>
+              <div className="rp-kpi-pro__value">{formatRs(salesToday)}</div>
+              <div className="rp-kpi-pro__sub">Invoices dated today</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Sales This Month</div>
+              <div className="rp-kpi-pro__value">{formatRs(salesMonth)}</div>
+              <div className="rp-kpi-pro__sub">Month to date</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Outstanding</div>
+              <div className="rp-kpi-pro__value">{formatRs(outstanding)}</div>
+              <div className="rp-kpi-pro__sub">Total balance due</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Low Stock</div>
+              <div className="rp-kpi-pro__value">{lowStockCount}</div>
+              <div className="rp-kpi-pro__sub">Reorder suggested</div>
+            </div>
+          </section>
 
-                <div className="rp-card-body">
-                  {monthlyValues.length ? (
-                    <BarChartSvg labels={monthlyLabels} values={monthlyValues} />
-                  ) : (
-                    <div className="rp-empty">
-                      <b>No monthly sales data</b>
-                      <span>Once invoices exist across months, the bar chart will appear here.</span>
-                    </div>
-                  )}
+          <section className="rp-grid2 rp-card-anim">
+            <div className="rp-card rp-glass">
+              <div className="rp-card-head">
+                <div>
+                  <div className="rp-card-title">Low Stock Alerts</div>
+                  <div className="rp-card-sub">Top items needing reorder</div>
                 </div>
-              </section>
+                <Link className="rp-link-btn" href="/stock">Open stock →</Link>
+              </div>
 
-              <section className="rp-card rp-glass">
-                <header className="rp-card-head">
-                  <div>
-                    <div className="rp-card-title">Sales by Customer (Top 5)</div>
-                    <div className="rp-card-sub">Share of revenue</div>
+              <div className="rp-card-body">
+                {loading ? (
+                  <div className="rp-empty">
+                    <b>Loading…</b>
+                    <span>Checking inventory levels.</span>
                   </div>
-                  <span className="rp-pill">Pie</span>
-                </header>
+                ) : err ? (
+                  <div className="rp-empty">
+                    <b>Could not load stock alerts</b>
+                    <span>{err}</span>
+                  </div>
+                ) : lowStockTop.length === 0 ? (
+                  <div className="rp-empty">
+                    <b>All good</b>
+                    <span>No low-stock items detected.</span>
+                  </div>
+                ) : (
+                  <div className="rp-alerts">
+                    {lowStockTop.map((p, idx) => {
+                      const code = (p.item_code || "").trim() || `ITEM-${idx + 1}`;
+                      const name = (p.name || "").trim() || "Unnamed product";
+                      const qty = lowQty(p);
+                      const min = Number(p.min_qty ?? 0) || 0;
 
-                <div className="rp-card-body">
-                  {customerValues.length ? (
-                    <DonutChartSvg labels={customerLabels} values={customerValues} />
-                  ) : (
-                    <div className="rp-empty">
-                      <b>No customer sales yet</b>
-                      <span>As soon as invoices exist, the customer chart will show here.</span>
-                    </div>
-                  )}
-                </div>
-              </section>
+                      return (
+                        <div className="rp-alert-row" key={`${code}-${idx}`}>
+                          <div className="rp-alert-left">
+                            <div className="rp-alert-code">{code}</div>
+                            <div className="rp-alert-name" title={name}>{name}</div>
+                          </div>
+
+                          <div className="rp-alert-right">
+                            <span className={`rp-pill2 ${qty <= 0 ? "rp-pill2--danger" : "rp-pill2--warn"}`}>
+                              {qty} in stock
+                            </span>
+                            <span className="rp-pill2 rp-pill2--soft">Min {min}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* RIGHT */}
-            <div className="rp-col">
-              <section className="rp-card rp-glass">
-                <header className="rp-card-head rp-card-head--tight">
-                  <div>
-                    <div className="rp-card-title">Recent Invoices</div>
-                    <div className="rp-card-sub">Latest 10</div>
-                  </div>
-                  <Link className="rp-link-btn" href="/invoices">
-                    View all →
-                  </Link>
-                </header>
+            <div className="rp-card rp-glass">
+              <div className="rp-card-head">
+                <div>
+                  <div className="rp-card-title">System Status</div>
+                  <div className="rp-card-sub">Operational overview</div>
+                </div>
+                <span className="rp-pill">Secure</span>
+              </div>
 
-                <div className="rp-card-body">
-                  <div className="rp-table-wrap">
-                    <table className="rp-table">
-                      <thead>
+              <div className="rp-card-body">
+                <div className="rp-status">
+                  <div className="rp-status-row">
+                    <span className="rp-status-k">Data sync</span>
+                    <span className={`rp-status-v ${loading ? "is-dim" : ""}`}>{loading ? "Syncing…" : "OK"}</span>
+                  </div>
+                  <div className="rp-status-row">
+                    <span className="rp-status-k">Invoices</span>
+                    <span className="rp-status-v">Ready</span>
+                  </div>
+                  <div className="rp-status-row">
+                    <span className="rp-status-k">Stock</span>
+                    <span className="rp-status-v">{lowStockCount > 0 ? "Attention" : "OK"}</span>
+                  </div>
+                  <div className="rp-status-row">
+                    <span className="rp-status-k">Role</span>
+                    <span className="rp-status-v">{mounted ? roleLabel : "—"}</span>
+                  </div>
+                </div>
+
+                <div className="rp-status-note">
+                  Premium lightweight dashboard — no heavy charts, only essential control.
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
+              <div>
+                <div className="rp-card-title">Recent Invoices</div>
+                <div className="rp-card-sub">Latest 10</div>
+              </div>
+              <Link className="rp-link-btn" href="/invoices">View all →</Link>
+            </div>
+
+            <div className="rp-card-body">
+              {loading ? (
+                <div className="rp-empty">
+                  <b>Loading recent invoices…</b>
+                  <span>Please wait.</span>
+                </div>
+              ) : err ? (
+                <div className="rp-empty">
+                  <b>Could not load invoices</b>
+                  <span>{err}</span>
+                </div>
+              ) : (
+                <div className="rp-table-wrap">
+                  <table className="rp-table">
+                    <thead>
+                      <tr>
+                        <th>Invoice</th>
+                        <th>Date</th>
+                        <th>Customer</th>
+                        <th>Total</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recent.length === 0 ? (
                         <tr>
-                          <th style={{ width: 130 }}>No.</th>
-                          <th style={{ width: 120 }}>Date</th>
-                          <th>Customer</th>
-                          <th style={{ width: 150, textAlign: "right" }}>Total</th>
-                          <th style={{ width: 150 }}>Status</th>
+                          <td className="rp-td-empty" colSpan={5}>No invoices yet.</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {(summary?.recentInvoices || []).slice(0, 10).map((inv) => {
-                          const st = statusMeta(inv.status);
-                          return (
-                            <tr key={inv.id}>
-                              <td className="rp-strong">
-                                <Link className="rp-row-link" href={`/invoices/${inv.id}`}>
-                                  {inv.invoice_number}
-                                </Link>
-                              </td>
-                              <td>{formatDate(inv.invoice_date)}</td>
-                              <td className="rp-strong">{inv.customers?.name || "Unknown"}</td>
-                              <td style={{ textAlign: "right" }} className="rp-strong">
-                                {formatRs(inv.total_amount || 0)}
-                              </td>
-                              <td>
-                                <span className={st.className}>{st.label}</span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-
-                        {!summary?.recentInvoices?.length && (
-                          <tr>
-                            <td colSpan={5} className="rp-td-empty">
-                              No invoices found.
+                      ) : (
+                        recent.map((inv) => (
+                          <tr key={String(inv.id)}>
+                            <td className="rp-strong">
+                              <Link className="rp-row-link" href={`/invoices/${inv.id}`}>
+                                {inv.invoice_number || `#${inv.id}`}
+                              </Link>
                             </td>
+                            <td>{inv.invoice_date || "—"}</td>
+                            <td>{inv.customers?.name || "—"}</td>
+                            <td className="rp-strong">{formatRs(Number(inv.total_amount || 0))}</td>
+                            <td><StatusBadge status={inv.status} /></td>
                           </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-              </section>
-
-              <section className="rp-card rp-glass">
-                <header className="rp-card-head rp-card-head--tight">
-                  <div>
-                    <div className="rp-card-title">Stock & Quick Links</div>
-                    <div className="rp-card-sub">Shortcuts</div>
-                  </div>
-                  <span className="rp-soft-pill">
-                    Credit notes (month): <b>{formatRs(summary?.creditNotesTotal ?? 0)}</b>
-                  </span>
-                </header>
-
-                <div className="rp-card-body">
-                  <div className="rp-chip-row">
-                    <Link className="rp-chip rp-chip--primary" href="/reports">
-                      Reports
-                    </Link>
-                    <Link className="rp-chip" href="/customers">
-                      Customer Pricing
-                    </Link>
-                    <Link className="rp-chip" href="/products">
-                      Products
-                    </Link>
-                    <Link className="rp-chip" href="/stock-movements">
-                      Stock Movements
-                    </Link>
-                  </div>
-                </div>
-              </section>
-
-              <section className="rp-card rp-glass">
-                <header className="rp-card-head rp-card-head--tight">
-                  <div>
-                    <div className="rp-card-title">Low Stock Products</div>
-                    <div className="rp-card-sub">Reorder suggested</div>
-                  </div>
-                </header>
-
-                <div className="rp-card-body">
-                  {(summary?.lowStock || []).length ? (
-                    <div className="rp-table-wrap">
-                      <table className="rp-table">
-                        <thead>
-                          <tr>
-                            <th style={{ width: 140 }}>Code</th>
-                            <th>Product</th>
-                            <th style={{ width: 110, textAlign: "right" }}>Stock</th>
-                            <th style={{ width: 110, textAlign: "right" }}>Reorder</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(summary?.lowStock || []).slice(0, 8).map((p) => (
-                            <tr key={p.id}>
-                              <td className="rp-strong">{p.sku || "-"}</td>
-                              <td>{p.name || "-"}</td>
-                              <td style={{ textAlign: "right" }} className="rp-strong">
-                                {p.current_stock ?? 0}
-                              </td>
-                              <td style={{ textAlign: "right" }}>{p.reorder_level ?? 0}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <div className="rp-empty rp-empty--compact">
-                      <b>No low stock items 🎉</b>
-                      <span>Your inventory looks healthy.</span>
-                    </div>
-                  )}
-                </div>
-              </section>
+              )}
             </div>
           </section>
 
-          <footer className="rp-footer rp-card-anim" style={{ animationDelay: "320ms" }}>
-            © 2025 Ram Pottery Ltd • Built by <span>MoBiz.mu</span>
+          <footer className="rp-footer">
+            © 2026 Ram Pottery Ltd - <span>Built by Mobiz.mu</span>
           </footer>
         </main>
       </div>
     </div>
   );
 }
+

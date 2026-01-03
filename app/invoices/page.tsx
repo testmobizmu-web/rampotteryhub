@@ -1,174 +1,170 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
+import { rpFetch } from "@/lib/rpFetch";
 
-type CustomerMini = { name: string | null; customer_code: string | null };
-
-type InvoiceRow = {
-  id: number;
-  invoice_number: string | null;
-  invoice_date: string | null;
-  total_amount: number | null;
-  amount_paid: number | null;
-  balance_due?: number | null; // new
-  balance_remaining: number | null; // legacy
-  status: string | null;
-  customers: CustomerMini[] | CustomerMini | null;
+type RpSession = {
+  id?: string;
+  username?: string;
+  name?: string;
+  role?: string;
 };
 
-type FilterKey = "ALL" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "DRAFT" | "VOID";
-
-function fmtMoney(n: number | null | undefined) {
-  const v = Number(n || 0);
-  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function roleUpper(r?: string) {
+  return String(r || "").toUpperCase();
+}
+function isAdmin(r?: string) {
+  return roleUpper(r) === "ADMIN";
+}
+function isManager(r?: string) {
+  return roleUpper(r) === "MANAGER";
+}
+function canDuplicate(r?: string) {
+  return isAdmin(r) || isManager(r);
 }
 
-function fmtDate(s: string | null | undefined) {
-  if (!s) return "—";
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("en-GB");
+const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const rs = (v: number) => `Rs ${n(v).toFixed(2)}`;
+
+function fmtDate(d?: string | null) {
+  if (!d) return "—";
+  const x = new Date(d);
+  if (Number.isNaN(x.getTime())) return d;
+  const pad = (k: number) => String(k).padStart(2, "0");
+  return `${pad(x.getDate())}/${pad(x.getMonth() + 1)}/${x.getFullYear()}`;
 }
 
-function normalizeCustomer(c: InvoiceRow["customers"]): CustomerMini | null {
-  if (!c) return null;
-  if (Array.isArray(c)) return c[0] || null;
-  return c;
+function fmtDateTime(d: Date) {
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function badgeForInvoice(statusRaw: string | null | undefined) {
-  const st = String(statusRaw || "ISSUED").toUpperCase().trim();
-
-  if (st === "PAID") return { label: "PAID", cls: "rp-badge rp-badge--paid" };
-  if (st === "PARTIALLY_PAID") return { label: "PARTIALLY PAID", cls: "rp-badge rp-badge--partial" };
-  if (st === "VOID") return { label: "VOID", cls: "rp-badge rp-badge--void" };
-  if (st === "DRAFT") return { label: "DRAFT", cls: "rp-badge rp-badge--neutral" };
-  return { label: "ISSUED", cls: "rp-badge rp-badge--issued" };
+function normalizeStatus(s?: string | null) {
+  const v = String(s || "").toUpperCase();
+  if (v === "PAID") return "Paid";
+  if (v === "PARTIALLY_PAID" || v === "PARTIAL") return "Partially Paid";
+  if (v === "VOID") return "Void";
+  if (v === "UNPAID") return "Issued";
+  return "Issued";
 }
 
-function toCsvValue(v: unknown) {
-  const s = String(v ?? "");
-  return `"${s.replace(/"/g, '""')}"`;
-}
-
-function downloadCsv(filename: string, headers: string[], rows: Array<Array<unknown>>) {
-  const csv = [headers, ...rows].map((r) => r.map(toCsvValue).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function isoDateOnly(s: string) {
-  // expects "YYYY-MM-DD" from <input type="date">
-  return s;
-}
-
-function parseInvoiceDateToYmd(invDate: string | null | undefined): string | null {
-  if (!invDate) return null;
-  // DB date comes as "YYYY-MM-DD" normally; keep safe fallback
-  const s = String(invDate).slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const d = new Date(invDate);
-  if (Number.isNaN(d.getTime())) return null;
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+function statusBadgeClass(s?: string | null) {
+  const st = normalizeStatus(s);
+  return (
+    "rp-badge " +
+    (st === "Paid"
+      ? "rp-badge--paid"
+      : st === "Partially Paid"
+      ? "rp-badge--partial"
+      : st === "Void"
+      ? "rp-badge--void"
+      : "rp-badge--issued")
+  );
 }
 
 export default function InvoicesPage() {
   const router = useRouter();
 
-  const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<FilterKey>("ALL");
-
-  // ✅ Date range filters (for reprint 3–6 months+)
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [lastSync, setLastSync] = useState<string>("");
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [dark, setDark] = useState(false);
-  const [lastSync, setLastSync] = useState<string>("—");
+  const [mounted, setMounted] = useState(false);
+  const [session, setSession] = useState<RpSession | null>(null);
 
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [rows, setRows] = useState<any[]>([]);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState<"All" | "Issued" | "Paid" | "Partially Paid" | "Void">("All");
+
+  const [openMenu, setOpenMenu] = useState<number | string | null>(null);
+
+  // Payment modal
+  const [payOpen, setPayOpen] = useState(false);
+  const [payInvoice, setPayInvoice] = useState<any | null>(null);
+  const [payAmount, setPayAmount] = useState<number>(0);
+  const [paySaving, setPaySaving] = useState(false);
 
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.body.style.overflow = mobileNavOpen ? "hidden" : "";
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [mobileNavOpen]);
+    setMounted(true);
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileNavOpen(false);
+    const saved = localStorage.getItem("rp_theme");
+    const initial = saved === "dark" ? "dark" : "light";
+    setTheme(initial);
+    document.documentElement.dataset.theme = initial;
+
+    try {
+      const raw = localStorage.getItem("rp_user");
+      if (raw) setSession(JSON.parse(raw));
+    } catch {
+      setSession(null);
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("rp_theme") : null;
-    const isDark = saved === "dark";
-    setDark(isDark);
-    document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
-  }, []);
+  const canSeeAdminNav = mounted && isAdmin(session?.role);
+  const navItems = useMemo(() => {
+    const base = [
+      { href: "/", label: "Dashboard" },
+      { href: "/invoices", label: "Invoices" },
+      { href: "/credit-notes", label: "Credit Notes" },
+      { href: "/stock", label: "Stock & Categories" },
+      { href: "/stock-movements", label: "Stock Movements" },
+      { href: "/customers", label: "Customers" },
+      { href: "/reports", label: "Reports & Statements" },
+    ];
+    if (canSeeAdminNav) base.push({ href: "/admin/users", label: "Users & Permissions" });
+    return base;
+  }, [canSeeAdminNav]);
+
+  const userLabel = useMemo(() => {
+    const name = (session?.name || session?.username || "").trim();
+    return name ? name : "User";
+  }, [session]);
+
+  const roleLabel = useMemo(() => {
+    const r = roleUpper(session?.role) || "STAFF";
+    return r;
+  }, [session]);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("rp_theme", next);
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      localStorage.removeItem("rp_user");
+      window.location.href = "/login";
+    }
+  }
 
   async function load() {
-    setLoading(true);
-    setErr(null);
+    try {
+      setLoading(true);
+      setErr(null);
 
-    const { data, error } = await supabase
-      .from("invoices")
-      .select(
-        `
-        id,
-        invoice_number,
-        invoice_date,
-        total_amount,
-        amount_paid,
-        balance_due,
-        balance_remaining,
-        status,
-        customers ( name, customer_code )
-      `
-      )
-      .order("id", { ascending: false });
+      const res = await rpFetch("/api/invoices", { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.ok === false) throw new Error(json?.error || "Failed to load invoices");
 
-    if (error) {
-      setErr(error.message);
-      setRows([]);
-    } else {
-      setRows((data as unknown as InvoiceRow[]) || []);
+      setRows(json.invoices || []);
+      setLastSync(fmtDateTime(new Date()));
+    } catch (e: any) {
+      setErr(e?.message || "Failed to load invoices");
+    } finally {
+      setLoading(false);
     }
-
-    const now = new Date();
-    setLastSync(
-      now.toLocaleString("en-GB", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })
-    );
-
-    setLoading(false);
   }
 
   useEffect(() => {
@@ -176,118 +172,101 @@ export default function InvoicesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+  useEffect(() => {
+    const close = () => setOpenMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, []);
 
-    const from = fromDate ? isoDateOnly(fromDate) : "";
-    const to = toDate ? isoDateOnly(toDate) : "";
+  async function markAsPaid(id: number | string) {
+    if (!confirm("Mark this invoice as PAID?")) return;
+    const res = await rpFetch(`/api/invoices/${id}/mark-paid`, { method: "PATCH" });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j?.ok === false) return alert(j?.error || "Failed to mark as paid");
+    await load();
+  }
 
-    return rows
-      .filter((r) => {
-        if (filter === "ALL") return true;
-        const st = String(r.status || "ISSUED").toUpperCase().trim();
-        return st === filter;
-      })
-      .filter((r) => {
-        // ✅ date range filter
-        if (!from && !to) return true;
+  async function voidInvoice(id: number | string) {
+    if (!confirm("Void this invoice? This cannot be undone.")) return;
+    const res = await rpFetch(`/api/invoices/${id}/void`, { method: "POST" });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j?.ok === false) return alert(j?.error || "Failed to void invoice");
+    await load();
+  }
 
-        const ymd = parseInvoiceDateToYmd(r.invoice_date);
-        if (!ymd) return false;
+  function duplicateInvoicePrefill(id: number | string) {
+    router.push(`/invoices/new?duplicate=${encodeURIComponent(String(id))}`);
+  }
 
-        if (from && ymd < from) return false;
-        if (to && ymd > to) return false;
+  function openPaymentModal(inv: any) {
+    setPayInvoice(inv);
+    // default = current amount_paid (so you can adjust)
+    setPayAmount(n(inv.amount_paid));
+    setPayOpen(true);
+    setOpenMenu(null);
+  }
 
-        return true;
-      })
-      .filter((r) => {
-        if (!needle) return true;
-        const c = normalizeCustomer(r.customers);
-        const hay = [
-          r.invoice_number || "",
-          r.invoice_date || "",
-          r.status || "",
-          c?.name || "",
-          c?.customer_code || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        return hay.includes(needle);
+  async function savePayment() {
+    if (!payInvoice?.id) return;
+    setPaySaving(true);
+    try {
+      const res = await rpFetch(`/api/invoices/${payInvoice.id}/set-payment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amountPaid: n(payAmount) }),
       });
-  }, [rows, q, filter, fromDate, toDate]);
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || "Failed to set payment");
 
-  const totals = useMemo(() => {
-    const sumTotal = filtered.reduce((a, r) => a + Number(r.total_amount || 0), 0);
-    const sumPaid = filtered.reduce((a, r) => a + Number(r.amount_paid || 0), 0);
-    const sumBal = filtered.reduce((a, r) => {
-      const balance = r.balance_due != null ? Number(r.balance_due || 0) : Number(r.balance_remaining || 0);
-      return a + balance;
-    }, 0);
-    return { count: filtered.length, sumTotal, sumPaid, sumBal };
-  }, [filtered]);
+      setPayOpen(false);
+      setPayInvoice(null);
+      await load();
+    } catch (e: any) {
+      alert(e?.message || "Failed to set payment");
+    } finally {
+      setPaySaving(false);
+    }
+  }
 
-  function exportCsv() {
-    const headers = ["Invoice No", "Date", "Customer", "Customer Code", "Total", "Paid", "Balance", "Status"];
-    const dataRows = filtered.map((r) => {
-      const c = normalizeCustomer(r.customers);
-      const badge = badgeForInvoice(r.status);
-      const balance = r.balance_due != null ? Number(r.balance_due || 0) : Number(r.balance_remaining || 0);
-
-      return [
-        r.invoice_number || `#${r.id}`,
-        fmtDate(r.invoice_date),
-        c?.name || "",
-        c?.customer_code || "",
-        fmtMoney(r.total_amount),
-        fmtMoney(r.amount_paid),
-        balance.toFixed(2),
-        badge.label,
-      ];
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      const st = normalizeStatus(r.status);
+      if (status !== "All" && st !== status) return false;
+      if (!q) return true;
+      const invNo = String(r.invoice_number || "").toLowerCase();
+      const cust = String(r.customers?.name || "").toLowerCase();
+      const code = String(r.customers?.customer_code || "").toLowerCase();
+      return invNo.includes(q) || cust.includes(q) || code.includes(q);
     });
+  }, [rows, search, status]);
 
-    downloadCsv(`invoices_${new Date().toISOString().slice(0, 10)}.csv`, headers, dataRows);
-  }
-
-  const filterPills: Array<{ key: FilterKey; label: string }> = [
-    { key: "ALL", label: "All" },
-    { key: "ISSUED", label: "Issued" },
-    { key: "PARTIALLY_PAID", label: "Partially Paid" },
-    { key: "PAID", label: "Paid" },
-    { key: "DRAFT", label: "Draft" },
-    { key: "VOID", label: "Void" },
-  ];
-
-  function toggleTheme() {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.setAttribute("data-theme", next ? "dark" : "light");
-    localStorage.setItem("rp_theme", next ? "dark" : "light");
-  }
-
-  function clearDates() {
-    setFromDate("");
-    setToDate("");
-  }
+  const kpis = useMemo(() => {
+    const total = filtered.reduce((s, r) => s + n(r.total_amount), 0);
+    const paid = filtered.reduce((s, r) => s + n(r.amount_paid), 0);
+    const balance = filtered.reduce((s, r) => s + n(r.balance_remaining), 0);
+    return { count: filtered.length, total, paid, balance };
+  }, [filtered]);
 
   return (
     <div className="rp-app">
       <div className="rp-bg" aria-hidden="true">
-        <span className="rp-bg-orb rp-bg-orb--1" />
-        <span className="rp-bg-orb rp-bg-orb--2" />
-        <span className="rp-bg-orb rp-bg-orb--3" />
-        <span className="rp-bg-grid" />
+        <div className="rp-bg-orb rp-bg-orb--1" />
+        <div className="rp-bg-orb rp-bg-orb--2" />
+        <div className="rp-bg-orb rp-bg-orb--3" />
+        <div className="rp-bg-grid" />
       </div>
 
       <div className="rp-shell rp-enter">
+        {/* Mobile top bar */}
         <div className="rp-mtop">
           <button
             type="button"
-            className="rp-icon-btn"
+            className="rp-icon-btn rp-burger"
+            onClick={() => setDrawerOpen(true)}
             aria-label="Open menu"
-            aria-expanded={mobileNavOpen}
-            onClick={() => setMobileNavOpen(true)}
           >
-            <span className="rp-burger" aria-hidden="true">
+            <span aria-hidden="true">
               <i />
               <i />
               <i />
@@ -295,319 +274,400 @@ export default function InvoicesPage() {
           </button>
 
           <div className="rp-mtop-brand">
-            <div className="rp-mtop-title">Invoices</div>
-            <div className="rp-mtop-sub">Reprint • Export • Print</div>
+            <div className="rp-mtop-title">RampotteryHUB</div>
+            <div className="rp-mtop-sub">Invoices</div>
           </div>
 
           <button type="button" className="rp-icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
-            {dark ? "☀️" : "🌙"}
+            {theme === "dark" ? "☀" : "🌙"}
           </button>
         </div>
 
+        {/* Overlay + Drawer */}
         <button
-          type="button"
-          className={`rp-overlay ${mobileNavOpen ? "is-open" : ""}`}
+          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
+          onClick={() => setDrawerOpen(false)}
           aria-label="Close menu"
-          onClick={() => setMobileNavOpen(false)}
         />
-
-        <aside className={`rp-drawer ${mobileNavOpen ? "is-open" : ""}`} aria-label="Mobile navigation">
+        <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
               <div className="rp-drawer-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Ltd"
-                  width={40}
-                  height={40}
-                  priority
-                  style={{ width: 40, height: 40, objectFit: "contain" }}
-                />
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={28} height={28} priority />
               </div>
               <div>
-                <div className="rp-drawer-title">Ram Pottery Ltd</div>
-                <div className="rp-drawer-sub">Online Accounting & Stock</div>
+                <div className="rp-drawer-title">RampotteryHUB</div>
+                <div className="rp-drawer-sub">Accounting & Stock System</div>
               </div>
             </div>
 
-            <button type="button" className="rp-icon-btn" onClick={() => setMobileNavOpen(false)} aria-label="Close menu">
+            <button type="button" className="rp-icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close">
               ✕
             </button>
           </div>
 
-          <nav className="rp-nav" onClick={() => setMobileNavOpen(false)}>
-            <Link className="rp-nav-btn" href="/">Dashboard</Link>
-            <Link className="rp-nav-btn rp-nav-btn--active" href="/invoices">Invoices</Link>
-            <Link className="rp-nav-btn" href="/credit-notes">Credit Notes</Link>
-            <Link className="rp-nav-btn" href="/products">Stock & Categories</Link>
-            <Link className="rp-nav-btn" href="/stock-movements">Stock Movements</Link>
-            <Link className="rp-nav-btn" href="/customers">Customers</Link>
-            <Link className="rp-nav-btn" href="/suppliers">Suppliers</Link>
-            <Link className="rp-nav-btn" href="/reports">Reports & Statements</Link>
-            <Link className="rp-nav-btn" href="/admin/users">Users & Permissions</Link>
-          </nav>
+          <div className="rp-drawer-body">
+            <nav className="rp-nav">
+              {navItems.map((it) => (
+                <Link
+                  key={it.href}
+                  className={`rp-nav-btn ${it.href === "/invoices" ? "rp-nav-btn--active" : ""}`}
+                  href={it.href}
+                  onClick={() => setDrawerOpen(false)}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">
+                    ▶
+                  </span>
+                  {it.label}
+                </Link>
+              ))}
+            </nav>
+
+            <div className="rp-side-footer rp-side-footer--in">
+              <div className="rp-role">
+                <span>Signed in</span>
+                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{mounted ? roleLabel : "—"}</b>
+              </div>
+            </div>
+          </div>
         </aside>
 
+        {/* Desktop sidebar */}
         <aside className="rp-side">
           <div className="rp-side-card rp-card-anim">
             <div className="rp-brand">
               <div className="rp-brand-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Ltd"
-                  width={44}
-                  height={44}
-                  priority
-                  style={{ width: 44, height: 44, objectFit: "contain" }}
-                />
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
               </div>
-              <div className="rp-brand-text">
-                <div className="rp-brand-title">Ram Pottery Ltd</div>
-                <div className="rp-brand-sub">Online Accounting & Stock Manager</div>
+              <div>
+                <div className="rp-brand-title">RampotteryHUB</div>
+                <div className="rp-brand-sub">Accounting & Stock System</div>
               </div>
             </div>
 
             <nav className="rp-nav">
-              <Link className="rp-nav-btn" href="/">Dashboard</Link>
-              <Link className="rp-nav-btn rp-nav-btn--active" href="/invoices">Invoices</Link>
-              <Link className="rp-nav-btn" href="/credit-notes">Credit Notes</Link>
-              <Link className="rp-nav-btn" href="/products">Stock & Categories</Link>
-              <Link className="rp-nav-btn" href="/stock-movements">Stock Movements</Link>
-              <Link className="rp-nav-btn" href="/customers">Customers</Link>
-              <Link className="rp-nav-btn" href="/suppliers">Suppliers</Link>
-              <Link className="rp-nav-btn" href="/reports">Reports & Statements</Link>
-              <Link className="rp-nav-btn" href="/admin/users">Users & Permissions</Link>
+              {navItems.map((it) => (
+                <Link
+                  key={it.href}
+                  className={`rp-nav-btn ${it.href === "/invoices" ? "rp-nav-btn--active" : ""}`}
+                  href={it.href}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">
+                    ▶
+                  </span>
+                  {it.label}
+                </Link>
+              ))}
             </nav>
 
-            <div className="rp-side-footer">
+            <div className="rp-side-footer rp-side-footer--in">
               <div className="rp-role">
-                <span>Module</span>
-                <b>Sales</b>
+                <span>Signed in</span>
+                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{mounted ? roleLabel : "—"}</b>
               </div>
             </div>
           </div>
         </aside>
 
+        {/* Main */}
         <main className="rp-main">
-          <div className="rp-top rp-card-anim" style={{ animationDelay: "60ms" }}>
-            <div className="rp-title">
-              <div className="rp-eyebrow">
-                <span className="rp-tag">Reprint • Export • Print</span>
-                <span className="rp-tag">Tip: click invoice no</span>
-              </div>
-              <h1>Invoices</h1>
-              <p>Premium list • fast filters • one-click printing (RamPotteryDoc)</p>
+          {/* Top bar */}
+          <header className="rp-top rp-top--saas rp-card-anim" style={{ animationDelay: "60ms" }}>
+            <div className="rp-top-left--actions">
+              <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={toggleTheme}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                {theme === "dark" ? "☀ Light" : "🌙 Dark"}
+              </button>
+
+              <button type="button" className="rp-ui-btn rp-ui-btn--danger" onClick={handleLogout}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                Log Out
+              </button>
             </div>
 
-            <div className="rp-top-right">
+            <div className="rp-top-center--logo">
+              <div className="rp-top-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} priority />
+              </div>
+            </div>
+
+            <div className="rp-top-right--sync">
               <div className="rp-sync">
-                <div className="rp-sync-label">Last sync</div>
-                <div className="rp-sync-time">{lastSync}</div>
+                <div className="rp-sync-label">Last sync :</div>
+                <div className="rp-sync-time">{lastSync || "—"}</div>
               </div>
-
-              <button type="button" className="rp-theme-btn" onClick={toggleTheme}>
-                {dark ? "☀️ Light" : "🌙 Dark"}
-              </button>
             </div>
-          </div>
+          </header>
 
-          <div className="rp-actions rp-card-anim" style={{ animationDelay: "120ms" }}>
-            <div className="rp-seg">
-              <Link className="rp-seg-item rp-seg-item--primary" href="/invoices/new">
-                + New Invoice
-              </Link>
-              <button className="rp-seg-item" type="button" onClick={exportCsv} disabled={loading}>
-                ⬇ Export CSV
-              </button>
-              <button className="rp-seg-item" type="button" onClick={() => window.print()}>
-                🖨 Print
-              </button>
-              <button className="rp-seg-item" type="button" onClick={load} disabled={loading}>
-                {loading ? "Loading…" : "Refresh"}
-              </button>
-              <button className="rp-seg-item" type="button" onClick={() => router.push("/")}>
-                ← Dashboard
-              </button>
+          {/* Executive header */}
+          <section className="rp-exec rp-card-anim">
+            <div className="rp-exec__left">
+              <div className="rp-exec__title">Invoices</div>
+              <div className="rp-exec__sub">Reprint • Duplicate • Payments • Mark Paid • Void (Admin)</div>
             </div>
-          </div>
-
-          <section className="rp-kpis rp-card-anim" style={{ animationDelay: "170ms" }}>
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">#</span>
-                <span className="rp-kpi-title">Invoices</span>
-              </div>
-              <div className="rp-kpi-val">{totals.count}</div>
-              <div className="rp-kpi-sub">Current view</div>
-            </div>
-
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">₹</span>
-                <span className="rp-kpi-title">Total</span>
-              </div>
-              <div className="rp-kpi-val">Rs {fmtMoney(totals.sumTotal)}</div>
-              <div className="rp-kpi-sub">Sum of totals</div>
-            </div>
-
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">✓</span>
-                <span className="rp-kpi-title">Paid</span>
-              </div>
-              <div className="rp-kpi-val">Rs {fmtMoney(totals.sumPaid)}</div>
-              <div className="rp-kpi-sub">Collected</div>
-            </div>
-
-            <div className="rp-kpi-card">
-              <div className="rp-kpi-head">
-                <span className="rp-kpi-ico">!</span>
-                <span className="rp-kpi-title">Balance</span>
-              </div>
-              <div className="rp-kpi-val">Rs {fmtMoney(totals.sumBal)}</div>
-              <div className="rp-kpi-sub">Outstanding</div>
+            <div className="rp-exec__right">
+              <span className={`rp-live ${loading ? "is-dim" : ""}`}>
+                <span className="rp-live-dot" aria-hidden="true" />
+                {loading ? "Syncing" : "Live"}
+              </span>
+              <span className={`rp-chip rp-chip--soft ${err ? "rp-chip--warn" : ""}`}>
+                {err ? "Attention needed" : "All systems normal"}
+              </span>
             </div>
           </section>
 
-          <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "220ms" }}>
-            <div className="rp-card-head">
+          {/* KPI row */}
+          <section className="rp-kpi-pro rp-card-anim">
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Invoices</div>
+              <div className="rp-kpi-pro__value">{kpis.count}</div>
+              <div className="rp-kpi-pro__sub">Filtered results</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Total</div>
+              <div className="rp-kpi-pro__value">{rs(kpis.total)}</div>
+              <div className="rp-kpi-pro__sub">Total invoice value</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Paid</div>
+              <div className="rp-kpi-pro__value">{rs(kpis.paid)}</div>
+              <div className="rp-kpi-pro__sub">Collected</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Outstanding</div>
+              <div className="rp-kpi-pro__value">{rs(kpis.balance)}</div>
+              <div className="rp-kpi-pro__sub">Balance due</div>
+            </div>
+          </section>
+
+          {/* Quick actions */}
+          <section className="rp-actions rp-card-anim">
+            <div className="rp-seg rp-seg--pro">
+              <Link className="rp-seg-item rp-seg-item--brand" href="/invoices/new">
+                <span className="rp-icbtn" aria-hidden="true">
+                  🧾
+                </span>
+                New Invoice
+              </Link>
+              <button type="button" className="rp-seg-item rp-seg-item--brand" onClick={() => load()}>
+                <span className="rp-icbtn" aria-hidden="true">
+                  ⟳
+                </span>
+                Refresh
+              </button>
+            </div>
+          </section>
+
+          {/* Search + filters */}
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Search & Filters</div>
-                <div className="rp-card-sub">Invoice no • customer • status • code • date range</div>
+                <div className="rp-card-sub">Invoice no • customer • code • status</div>
               </div>
-              <span className="rp-pill">{loading ? "Syncing…" : "Ready"}</span>
             </div>
 
             <div className="rp-card-body">
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <input
-                  className="rp-input"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="Search invoice no, customer, status…"
-                  style={{ flex: "1 1 280px" }}
-                />
+              <input
+                className="rp-input rp-input--full"
+                placeholder="Search invoice or customer…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
 
-                {/* ✅ Date range filters (same design) */}
-                <input
-                  className="rp-input"
-                  type="date"
-                  value={fromDate}
-                  onChange={(e) => setFromDate(e.target.value)}
-                  style={{ flex: "0 0 160px" }}
-                  title="From date"
-                />
-                <input
-                  className="rp-input"
-                  type="date"
-                  value={toDate}
-                  onChange={(e) => setToDate(e.target.value)}
-                  style={{ flex: "0 0 160px" }}
-                  title="To date"
-                />
-                <button className="rp-seg-item" type="button" onClick={clearDates} disabled={!fromDate && !toDate}>
-                  Clear dates
-                </button>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {filterPills.map((p) => (
-                    <button
-                      key={p.key}
-                      type="button"
-                      className={`rp-chip ${filter === p.key ? "rp-chip--primary" : ""}`}
-                      onClick={() => setFilter(p.key)}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
+              <div className="rp-chip-row">
+                {(["All", "Issued", "Paid", "Partially Paid", "Void"] as const).map((s) => (
+                  <button
+                    key={s}
+                    className={`rp-filter-pill ${status === s ? "rp-filter-pill--active" : ""}`}
+                    onClick={() => setStatus(s)}
+                  >
+                    {s}
+                  </button>
+                ))}
               </div>
 
-              {err && (
-                <div style={{ marginTop: 12, color: "rgba(227,6,19,0.95)", fontWeight: 900 }}>
-                  {err}
-                </div>
-              )}
+              {err ? <div className="rp-note rp-note--warn">{err}</div> : null}
             </div>
           </section>
 
-          <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "280ms" }}>
+          {/* Table */}
+          <section className="rp-card rp-card-anim">
             <div className="rp-card-head rp-card-head--tight">
               <div>
-                <div className="rp-card-title">Invoice List</div>
-                <div className="rp-card-sub">Click invoice number to open printable document</div>
+                <div className="rp-card-title">Invoice Register</div>
+                <div className="rp-card-sub">Reprint-ready (3–6 months later)</div>
               </div>
-              <span className="rp-soft-pill">
-                Showing <b>{filtered.length}</b>
-              </span>
+              <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
 
-            <div className="rp-card-body" style={{ padding: 0 }}>
-              <div className="rp-table-wrap">
-                <table className="rp-table">
-                  <thead>
+            <div className="rp-card-body rp-table-wrap">
+              <table className="rp-table rp-table--premium">
+                <thead>
+                  <tr>
+                    <th>Invoice</th>
+                    <th>Date</th>
+                    <th>Customer</th>
+                    <th className="rp-right">Total</th>
+                    <th className="rp-right">Paid</th>
+                    <th className="rp-right">Balance</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filtered.length === 0 ? (
                     <tr>
-                      <th style={{ width: 160 }}>Invoice No</th>
-                      <th style={{ width: 120 }}>Date</th>
-                      <th>Customer</th>
-                      <th style={{ textAlign: "right", width: 150 }}>Total (Rs)</th>
-                      <th style={{ textAlign: "right", width: 150 }}>Paid (Rs)</th>
-                      <th style={{ textAlign: "right", width: 160 }}>Balance (Rs)</th>
-                      <th style={{ width: 160 }}>Status</th>
+                      <td colSpan={8} className="rp-td-empty">
+                        {loading ? "Loading invoices…" : "No invoices found."}
+                      </td>
                     </tr>
-                  </thead>
+                  ) : (
+                    filtered.map((r) => {
+                      const st = normalizeStatus(r.status);
+                      const allowDuplicate = canDuplicate(session?.role);
+                      const allowVoid = isAdmin(session?.role) && st !== "Void";
 
-                  <tbody>
-                    {filtered.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="rp-td-empty">
-                          No invoices found.
-                        </td>
-                      </tr>
-                    ) : (
-                      filtered.map((r) => {
-                        const c = normalizeCustomer(r.customers);
-                        const badge = badgeForInvoice(r.status);
+                      return (
+                        <tr key={String(r.id)}>
+                          <td className="rp-strong">
+                            <button
+                              type="button"
+                              className="rp-row-link"
+                              onClick={() => router.push(`/invoices/${r.id}`)}
+                            >
+                              {r.invoice_number || `#${r.id}`}
+                            </button>
+                          </td>
 
-                        const balance =
-                          r.balance_due != null ? Number(r.balance_due || 0) : Number(r.balance_remaining || 0);
+                          <td>{fmtDate(r.invoice_date)}</td>
 
-                        return (
-                          <tr key={r.id}>
-                            <td className="rp-strong">
-                              <Link className="rp-row-link" href={`/invoices/${r.id}`}>
-                                {r.invoice_number || `#${r.id}`}
-                              </Link>
-                            </td>
-                            <td>{fmtDate(r.invoice_date)}</td>
-                            <td className="rp-strong">{c?.name || "—"}</td>
-                            <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }} className="rp-strong">
-                              {fmtMoney(r.total_amount)}
-                            </td>
-                            <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                              {fmtMoney(r.amount_paid)}
-                            </td>
-                            <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                              {balance.toFixed(2)}
-                            </td>
-                            <td>
-                              <span className={badge.cls}>{badge.label}</span>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                          <td>
+                            <div className="rp-strong">{r.customers?.name || "—"}</div>
+                            <div className="rp-muted">{r.customers?.customer_code || ""}</div>
+                          </td>
+
+                          <td className="rp-right">{rs(n(r.total_amount))}</td>
+                          <td className="rp-right">{rs(n(r.amount_paid))}</td>
+                          <td className="rp-right">{rs(n(r.balance_remaining))}</td>
+
+                          <td>
+                            <span className={statusBadgeClass(r.status)}>{st}</span>
+                          </td>
+
+                          {/* ⋮ actions */}
+                          <td className="rp-actions-cell">
+                            <button
+                              type="button"
+                              className="rp-row-actions-btn"
+                              aria-label="Invoice actions"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenMenu(openMenu === r.id ? null : r.id);
+                              }}
+                            >
+                              ⋮
+                            </button>
+
+                            {openMenu === r.id && (
+                              <div className="rp-row-actions-menu" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={() => {
+                                    setOpenMenu(null);
+                                    router.push(`/invoices/${r.id}`);
+                                  }}
+                                >
+                                  Reprint
+                                </button>
+
+                                {allowDuplicate && (
+                                  <button onClick={() => duplicateInvoicePrefill(r.id)}>Duplicate</button>
+                                )}
+
+                                {st !== "Void" && (
+                                  <>
+                                    <div className="rp-row-actions-sep" />
+
+                                    <button onClick={() => openPaymentModal(r)}>Set Payment…</button>
+
+                                    {st !== "Paid" && <button onClick={() => markAsPaid(r.id)}>Mark as Paid</button>}
+
+                                    {allowVoid && (
+                                      <button className="danger" onClick={() => voidInvoice(r.id)}>
+                                        Void Invoice
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
           </section>
 
-          <footer className="rp-footer rp-card-anim" style={{ animationDelay: "340ms" }}>
-            © 2025 Ram Pottery Ltd • Built by <span>MoBiz.mu</span>
-          </footer>
+          <footer className="rp-footer">© {new Date().getFullYear()} Ram Pottery Ltd • Built by Mobiz.mu</footer>
         </main>
       </div>
+
+      {/* ===== Payment Modal ===== */}
+      {payOpen && (
+        <>
+          <button className="rp-modal-overlay" onClick={() => (!paySaving ? setPayOpen(false) : null)} />
+          <div className="rp-modal">
+            <div className="rp-modal-head">
+              <div>
+                <div className="rp-modal-title">Set Payment</div>
+                <div className="rp-modal-sub">
+                  {payInvoice?.invoice_number || ""} • {payInvoice?.customers?.name || ""}
+                </div>
+              </div>
+              <button className="rp-icon-btn" onClick={() => (!paySaving ? setPayOpen(false) : null)}>
+                ✕
+              </button>
+            </div>
+
+            <div className="rp-modal-body">
+              <div className="rp-field">
+                <label className="rp-label">Amount Paid</label>
+                <input
+                  className="rp-input rp-input--full rp-input--right"
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(n(e.target.value))}
+                />
+                <div className="rp-help">
+                  Total: <b>{rs(n(payInvoice?.gross_total ?? payInvoice?.total_amount))}</b> • Current paid:{" "}
+                  <b>{rs(n(payInvoice?.amount_paid))}</b>
+                </div>
+              </div>
+
+              <div className="rp-modal-actions">
+                <button className="rp-ui-btn" onClick={() => setPayOpen(false)} disabled={paySaving}>
+                  Cancel
+                </button>
+                <button className="rp-ui-btn rp-ui-btn--brand" onClick={savePayment} disabled={paySaving}>
+                  {paySaving ? "Saving…" : "Save Payment"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
+

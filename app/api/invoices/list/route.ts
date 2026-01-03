@@ -1,9 +1,33 @@
-import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+// app/api/invoices/list/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { getUserFromHeader } from "@/lib/payments";
 
-export async function GET() {
+function supaAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !(service || anon)) {
+    throw new Error(
+      "Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + (SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY)"
+    );
+  }
+  return createClient(url, service || anon!);
+}
+
+export async function GET(req: NextRequest) {
   try {
-    // Get latest invoices with customer name
+    const user = getUserFromHeader(req.headers.get("x-rp-user"));
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Optional: viewers can still view invoices; adjust if you want stricter control
+    // If you want to block some roles, do it here.
+
+    const supabase = supaAdmin();
+
     const { data, error } = await supabase
       .from("invoices")
       .select(
@@ -12,29 +36,21 @@ export async function GET() {
         invoice_number,
         invoice_date,
         total_amount,
+        amount_paid,
+        balance_due,
+        balance_remaining,
         status,
-        customers ( name )
+        customers ( name, customer_code )
       `
       )
-      .order("invoice_date", { ascending: false });
+      .order("id", { ascending: false });
 
     if (error) throw error;
 
-    const invoices =
-      data?.map((row: any) => ({
-        id: row.id,
-        invoice_number: row.invoice_number,
-        invoice_date: row.invoice_date,
-        total_amount: row.total_amount ?? 0,
-        status: row.status,
-        customer_name: row.customers?.name ?? "",
-      })) ?? [];
-
-    return NextResponse.json({ invoices });
+    return NextResponse.json({ ok: true, invoices: data || [] });
   } catch (err: any) {
-    console.error("Error loading invoices list:", err);
     return NextResponse.json(
-      { error: err?.message || "Failed to load invoices list" },
+      { ok: false, error: err?.message || "Failed to load invoices" },
       { status: 500 }
     );
   }

@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
+import RamPotteryDocCreditNote from "@/components/RamPotteryDocCreditNote";
 
 type CustomerInfo = {
   id: number;
@@ -20,14 +20,20 @@ type ProductInfo = { id: number; item_code: string | null; name: string | null }
 type CreditNoteItemView = {
   id: number;
   product_id: number | null;
+
+  // qty fields
+  uom?: string | null; // may exist in DB now
   box_qty: number | null;
   units_per_box: number | null;
   total_qty: number | null;
+
+  // pricing
   unit_price_excl_vat: number | null;
   unit_vat: number | null;
+
   products: ProductInfo | null;
 
-  // computed (client side)
+  // computed on client:
   unit_price_incl_vat?: number;
   line_total?: number;
 };
@@ -64,22 +70,35 @@ function fmtDate(s: string | null | undefined) {
   if (Number.isNaN(d.getTime())) return String(s);
   return d.toLocaleDateString("en-GB");
 }
-function money(n: number) {
-  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
-export default function CreditNoteDetailPage() {
+export default function CreditNoteReprintPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
+  const id = Number(params?.id);
 
   const [cn, setCn] = useState<CreditNoteView | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const id = Number(params?.id);
+  const [voiding, setVoiding] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    if (!id) return;
+    try {
+      const raw = localStorage.getItem("rp_user") || "";
+      const u = raw ? JSON.parse(raw) : null;
+      setIsAdmin(String(u?.role || "").toLowerCase() === "admin");
+    } catch {
+      setIsAdmin(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!id || !Number.isFinite(id) || id <= 0) {
+      setLoading(false);
+      setErr("Invalid credit note id");
+      return;
+    }
 
     async function load() {
       setLoading(true);
@@ -111,6 +130,7 @@ export default function CreditNoteDetailPage() {
           credit_note_items (
             id,
             product_id,
+            uom,
             box_qty,
             units_per_box,
             total_qty,
@@ -142,15 +162,21 @@ export default function CreditNoteDetailPage() {
       const vat = n2(r.unit_vat);
       const incl = round2(ex + vat);
 
+      const uom = String(r.uom || "BOX").toUpperCase();
       const boxQty = n2(r.box_qty);
       const unitsPerBox = n2(r.units_per_box);
 
-      // fallback: total_qty = box * units_per_box if missing
-      const qty = n2(r.total_qty ?? boxQty * unitsPerBox);
+      // If total_qty is present, use it; else compute:
+      // BOX: boxQty * unitsPerBox
+      // PCS: boxQty (stored in box_qty as qty input)
+      const fallbackQty = uom === "PCS" ? boxQty : boxQty * unitsPerBox;
+      const qty = n2(r.total_qty ?? fallbackQty);
+
       const lineTotal = round2(incl * qty);
 
       return {
         ...r,
+        uom,
         total_qty: qty,
         unit_price_incl_vat: incl,
         line_total: lineTotal,
@@ -166,594 +192,290 @@ export default function CreditNoteDetailPage() {
 
   if (loading) {
     return (
-      <div style={{ padding: 22, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
-        Loading credit note…
+      <div className="rp-soft-page">
+        <div className="rp-soft-card">Loading credit note…</div>
+        <style jsx global>{baseScreenCss}</style>
       </div>
     );
   }
 
   if (!cn || err) {
     return (
-      <div style={{ padding: 22, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
-        <div style={{ marginBottom: 12, fontWeight: 900 }}>
-          Credit note not found
+      <div className="rp-soft-page">
+        <div className="rp-soft-card">
+          <div className="rp-soft-title">Credit note not found</div>
+          <div className="rp-soft-err">{err ? `Error: ${err}` : ""}</div>
+          <button className="rp-ui-btn rp-ui-btn--brand" onClick={() => router.push("/credit-notes")}>
+            <span className="rp-ui-btn__dot" aria-hidden="true" /> ← Back to Credit Notes
+          </button>
         </div>
-        <div style={{ color: "#e11d48", fontWeight: 900 }}>{err ? `Error: ${err}` : ""}</div>
-        <button
-          onClick={() => router.push("/credit-notes")}
-          style={{
-            marginTop: 14,
-            borderRadius: 12,
-            border: "1px solid rgba(0,0,0,.15)",
-            padding: "10px 12px",
-            fontWeight: 900,
-            cursor: "pointer",
-            background: "white",
-          }}
-        >
-          ← Back to Credit Notes
-        </button>
+        <style jsx global>{baseScreenCss}</style>
       </div>
     );
   }
 
-  const customer = cn.customers;
+  const statusUpper = String(cn.status || "ISSUED").toUpperCase();
+  const isVoid = statusUpper === "VOID";
 
-  // ======= Company header (edit to your real details if needed) =======
-  const COMPANY = {
-    name: "RAM POTTERY LTD",
-    tagline1: "MANUFACTURER & IMPORTER OF QUALITY CLAY",
-    tagline2: "PRODUCTS AND OTHER RELIGIOUS ITEMS",
-    address: "Robert Kennedy Street, Reunion Maurel, Petit Raffray - Mauritius",
-    tel: "+230 57788884  +230 58060268  +230 52522844",
-    email: "info@rampottery.com",
-    web: "www.rampottery.com",
-    brn: "C17144377",
-    vat: "VAT:123456789",
-  };
+  async function handleVoid() {
+    if (!cn || isVoid) return;
 
-  // Totals box lines you show in template
-  const prevBalance = 0; // if you later store it, map here
+    const ok = confirm(
+      "This will VOID the credit note and reverse stock.\nThis action cannot be undone.\n\nProceed?"
+    );
+    if (!ok) return;
+
+    try {
+      setVoiding(true);
+
+      const res = await fetch(`/api/credit-notes/${cn.id}/void`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-rp-user": localStorage.getItem("rp_user") || "",
+        },
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || "Failed to void credit note");
+
+      router.refresh();
+    } catch (e: any) {
+      alert(e?.message || "Failed to VOID credit note");
+    } finally {
+      setVoiding(false);
+    }
+  }
+
+  const mappedItems = computed.items.map((r, idx) => ({
+    sn: idx + 1,
+    item_code: r.products?.item_code,
+    uom: r.uom || "BOX",
+    box_qty: r.box_qty,
+    units_per_box: r.units_per_box,
+    total_qty: r.total_qty,
+    description: r.products?.name,
+    unit_price_excl_vat: r.unit_price_excl_vat,
+    unit_vat: r.unit_vat,
+    unit_price_incl_vat: r.unit_price_incl_vat,
+    line_total: r.line_total,
+  }));
+
+  // Totals (credit note usually has no running balances; keep 0 unless you add later)
+  const prevBalance = 0;
   const grossTotal = round2(computed.totalAmount + prevBalance);
-  const amountPaid = 0; // credit notes often 0; if stored, map here
+  const amountPaid = 0;
   const balanceRemaining = round2(grossTotal - amountPaid);
 
   const docNo = cn.credit_note_number || `#${cn.id}`;
   const docDate = fmtDate(cn.credit_note_date);
 
-  const red = "#e30613";
-  const border = "#111";
-
   return (
-    <div className="rp-print-page">
-      {/* Screen controls (hidden on print) */}
-      <div className="rp-print-controls print-hidden">
-        <button className="rp-btn" onClick={() => router.push("/credit-notes")}>
-          ← Back
-        </button>
-        <button className="rp-btn rp-btn-primary" onClick={() => window.print()}>
-          🖨 Print / Save PDF
-        </button>
-      </div>
+    <div className="rp-print-shell">
+      {/* Top controls (screen only) */}
+      <div className="rp-print-top print-hidden">
+        <div className="rp-print-left">
+          <button className="rp-ui-btn" onClick={() => router.push("/credit-notes")}>
+            <span className="rp-ui-btn__dot" aria-hidden="true" /> ← Back
+          </button>
 
-      {/* ===== A4 DOCUMENT ===== */}
-      <div className="rp-a4">
-        <div className="rp-doc">
-          {/* HEADER OUTER BOX */}
-          <div className="rp-headerbox">
-            <div className="rp-head-grid">
-              {/* Logo */}
-              <div className="rp-head-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Logo"
-                  width={140}
-                  height={140}
-                  priority
-                  style={{ width: 140, height: 140, objectFit: "contain" }}
-                />
-              </div>
+          <span className={`rp-badge ${isVoid ? "rp-badge--void" : "rp-badge--issued"}`}>
+            {isVoid ? "VOID (LOCKED)" : statusUpper}
+          </span>
 
-              {/* Center text */}
-              <div className="rp-head-center">
-                <div className="rp-title">{COMPANY.name}</div>
-                <div className="rp-sub">{COMPANY.tagline1}</div>
-                <div className="rp-sub">{COMPANY.tagline2}</div>
+          <span className="rp-soft-pill">
+            Credit Note: <b>{docNo}</b>
+          </span>
+        </div>
 
-                <div className="rp-addr">{COMPANY.address}</div>
+        <div className="rp-print-right">
+          {isAdmin && (
+            <button
+              className="rp-ui-btn rp-ui-btn--danger"
+              onClick={handleVoid}
+              disabled={isVoid || voiding}
+              title={isVoid ? "Already VOID" : "VOID credit note"}
+            >
+              <span className="rp-ui-btn__dot" aria-hidden="true" />
+              {voiding ? "Voiding…" : "🛑 VOID"}
+            </button>
+          )}
 
-                <div className="rp-line">
-                  <span className="rp-red">Tel:</span> {COMPANY.tel}
-                </div>
-                <div className="rp-line">
-                  <span className="rp-red">Email:</span> {COMPANY.email}{" "}
-                  <span className="rp-red">Web:</span> {COMPANY.web}
-                </div>
-
-                <div className="rp-doc-type">CREDIT NOTE</div>
-              </div>
-            </div>
-          </div>
-
-          {/* CUSTOMER + META ROW */}
-          <div className="rp-row2">
-            {/* CUSTOMER DETAILS BOX */}
-            <div className="rp-box">
-              <div className="rp-box-head">CUSTOMER DETAILS</div>
-              <div className="rp-box-body">
-                <div className="rp-field">
-                  <div className="rp-lbl">Name:</div>
-                  <div className="rp-val">{customer?.name || ""}</div>
-                </div>
-                <div className="rp-field">
-                  <div className="rp-lbl">ADDRESS:</div>
-                  <div className="rp-val">{customer?.address || ""}</div>
-                </div>
-                <div className="rp-field">
-                  <div className="rp-lbl">Tel:</div>
-                  <div className="rp-val">{customer?.phone || ""}</div>
-                </div>
-
-                <div className="rp-field rp-dual">
-                  <div className="rp-dual-left">
-                    <div className="rp-lbl">BRN:</div>
-                    <div className="rp-val">{customer?.brn || ""}</div>
-                  </div>
-                  <div className="rp-dual-right">
-                    <div className="rp-lbl">VAT No:</div>
-                    <div className="rp-val">{customer?.vat_no || ""}</div>
-                  </div>
-                </div>
-
-                <div className="rp-field">
-                  <div className="rp-lbl">CUSTOMER CODE:</div>
-                  <div className="rp-val">{customer?.customer_code || ""}</div>
-                </div>
-              </div>
-            </div>
-
-            {/* META BOX */}
-            <div className="rp-box">
-              <div className="rp-box-head rp-box-head-split">
-                <span>BRN: {COMPANY.brn}</span>
-                <span> {COMPANY.vat}</span>
-              </div>
-
-              <div className="rp-box-body">
-                <div className="rp-field">
-                  <div className="rp-lbl">CREDIT NOTE NO:</div>
-                  <div className="rp-val">{docNo}</div>
-                </div>
-                <div className="rp-field">
-                  <div className="rp-lbl">DATE:</div>
-                  <div className="rp-val">{docDate}</div>
-                </div>
-                <div className="rp-field">
-                  <div className="rp-lbl">PURCHASE ORDER NO:</div>
-                  <div className="rp-val">{cn.purchase_order_no || ""}</div>
-                </div>
-
-                <div className="rp-field rp-sales">
-                  <div className="rp-lbl">SALES REP:</div>
-                  <div className="rp-val">
-                    {cn.sales_rep ? `Mr ${cn.sales_rep}` : ""}{" "}
-                    <span className="rp-red" style={{ marginLeft: 10 }}>
-                      Tel:
-                    </span>{" "}
-                    {cn.sales_rep_phone || ""}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ITEMS TABLE */}
-          <div className="rp-tablebox">
-            <table className="rp-table">
-              <thead>
-                <tr>
-                  <th>SN</th>
-                  <th>ITEM CODE</th>
-                  <th>BOX</th>
-                  <th>UNIT PER BOX</th>
-                  <th>TOTAL QTY</th>
-                  <th className="rp-desc">DESCRIPTION</th>
-                  <th>UNIT PRICE (Excl Vat)</th>
-                  <th>VAT</th>
-                  <th>UNIT PRICE (Incl Vat)</th>
-                  <th>TOTAL AMOUNT (Incl Vat)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {computed.items.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="rp-empty">
-                      No items
-                    </td>
-                  </tr>
-                ) : (
-                  computed.items.map((r, idx) => (
-                    <tr key={r.id}>
-                      <td className="rp-num">{idx + 1}</td>
-                      <td>{r.products?.item_code || ""}</td>
-                      <td className="rp-num">{n2(r.box_qty) ? n2(r.box_qty) : ""}</td>
-                      <td className="rp-num">{n2(r.units_per_box) ? n2(r.units_per_box) : ""}</td>
-                      <td className="rp-num">{n2(r.total_qty) ? n2(r.total_qty) : ""}</td>
-                      <td className="rp-desc">{r.products?.name || ""}</td>
-                      <td className="rp-money">{money(n2(r.unit_price_excl_vat))}</td>
-                      <td className="rp-money">{money(n2(r.unit_vat))}</td>
-                      <td className="rp-money">{money(n2(r.unit_price_incl_vat))}</td>
-                      <td className="rp-money">{money(n2(r.line_total))}</td>
-                    </tr>
-                  ))
-                )}
-
-                {/* Add blank rows to mimic template height (so totals sit at bottom like your picture) */}
-                {Array.from({ length: Math.max(0, 10 - computed.items.length) }).map((_, i) => (
-                  <tr key={`blank-${i}`} className="rp-blank">
-                    <td>&nbsp;</td><td /><td /><td /><td /><td /><td /><td /><td /><td />
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* NOTES + TOTALS */}
-          <div className="rp-bottom">
-            {/* NOTES */}
-            <div className="rp-notes">
-              <div className="rp-notes-title">Note:</div>
-              <ul>
-                <li>Goods once sold cannot be returned or exchanged.</li>
-                <li>For any other manufacturing defects, must provide this invoice for a refund or exchange.</li>
-                <li>
-                  Customer must verify that the quantity of goods conforms with their invoice; otherwise, we will not be
-                  responsible after delivery
-                </li>
-                <li>Interest of 1% above the bank rate will be charged on sum due if not settled within 30 days.</li>
-                <li>All cheques to be issued on <b>RAM POTTERY LTD.</b></li>
-                <li>Bank transfer to <b className="rp-red">000 44 570 46 59 MCB Bank</b></li>
-              </ul>
-            </div>
-
-            {/* TOTALS BOX */}
-            <div className="rp-totals">
-              <table className="rp-totals-table">
-                <tbody>
-                  <tr>
-                    <td>SUB TOTAL</td>
-                    <td className="rp-money">{money(computed.subtotal)}</td>
-                  </tr>
-                  <tr>
-                    <td>VAT 15%</td>
-                    <td className="rp-money">{money(computed.vatAmount)}</td>
-                  </tr>
-                  <tr>
-                    <td><b>TOTAL AMOUNT</b></td>
-                    <td className="rp-money"><b>{money(computed.totalAmount)}</b></td>
-                  </tr>
-                  <tr>
-                    <td>PREVIOUS BALANCE</td>
-                    <td className="rp-money">{money(prevBalance)}</td>
-                  </tr>
-                  <tr>
-                    <td><b>GROSS TOTAL</b></td>
-                    <td className="rp-money"><b>{money(grossTotal)}</b></td>
-                  </tr>
-                  <tr>
-                    <td>AMOUNT PAID</td>
-                    <td className="rp-money">{money(amountPaid)}</td>
-                  </tr>
-                  <tr>
-                    <td><b>BALANCE REMAINING</b></td>
-                    <td className="rp-money"><b>{money(balanceRemaining)}</b></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* SIGNATURES */}
-          <div className="rp-sign">
-            <div className="rp-sign-col">
-              <div className="rp-sign-line" />
-              <div className="rp-sign-label">Signature</div>
-              <div className="rp-sign-sub">Prepared by:</div>
-            </div>
-            <div className="rp-sign-col">
-              <div className="rp-sign-line" />
-              <div className="rp-sign-label">Signature</div>
-              <div className="rp-sign-sub">Delivered by:</div>
-            </div>
-            <div className="rp-sign-col">
-              <div className="rp-sign-line" />
-              <div className="rp-sign-label">Customer Signature</div>
-              <div className="rp-sign-sub">Customer Name: <i>Please verify before sign</i></div>
-            </div>
-          </div>
-
-          {/* BOTTOM RED STRIP */}
-          <div className="rp-strip">
-            We thank you for your purchase and look forward to being of service to you again
-          </div>
+          <button
+            className="rp-ui-btn rp-ui-btn--brand"
+            onClick={() => window.print()}
+            disabled={isVoid}
+            title={isVoid ? "VOID credit notes are locked" : "Print / Save PDF"}
+          >
+            <span className="rp-ui-btn__dot" aria-hidden="true" />
+            🖨 Print / Save PDF
+          </button>
         </div>
       </div>
 
-      {/* ===== GLOBAL/PRINT CSS ===== */}
-      <style jsx global>{`
-        /* keep print clean */
-        .print-hidden { display: block; }
-        @media print {
-          .print-hidden { display: none !important; }
-        }
+      {isVoid && (
+        <div className="rp-note rp-note--warn print-hidden">
+          🔒 This credit note is VOID and locked. Reprint is disabled.
+        </div>
+      )}
 
-        .rp-print-page{
-          font-family: Arial, Helvetica, sans-serif;
-          background:#f3f4f6;
-          padding: 16px 10px;
-        }
+      {/* ✅ LOCKED A4 TEMPLATE (shared engine) */}
+      <RamPotteryDocCreditNote
+        docNoLabel="CREDIT NOTE NO:"
+        docNoValue={docNo}
+        dateLabel="DATE:"
+        dateValue={docDate}
+        purchaseOrderValue={cn.purchase_order_no || ""}
+        salesRepName={cn.sales_rep || ""}
+        salesRepPhone={cn.sales_rep_phone || ""}
+        customer={{
+          name: cn.customers?.name,
+          address: cn.customers?.address,
+          phone: cn.customers?.phone,
+          brn: cn.customers?.brn,
+          vat_no: cn.customers?.vat_no,
+          customer_code: cn.customers?.customer_code,
+        }}
+        company={{
+          brn: "C17144377",
+          vat_no: "123456789",
+        }}
+        items={mappedItems}
+        totals={{
+          subtotal: computed.subtotal,
+          vat_amount: computed.vatAmount,
+          total_amount: computed.totalAmount,
+          previous_balance: prevBalance,
+          amount_paid: amountPaid,
+          balance_remaining: balanceRemaining,
+          vatPercentLabel: "VAT 15%",
+        }}
+      />
 
-        .rp-print-controls{
-          max-width: 980px;
-          margin: 0 auto 12px auto;
-          display:flex;
-          gap:10px;
-          justify-content:flex-end;
-        }
-        .rp-btn{
-          border:1px solid rgba(0,0,0,.2);
-          background:#fff;
-          padding:10px 12px;
-          border-radius:10px;
-          font-weight:900;
-          cursor:pointer;
-        }
-        .rp-btn-primary{
-          border-color: ${red};
-          background:${red};
-          color:#fff;
-        }
-
-        /* A4 sizing */
-        .rp-a4{
-          max-width: 980px;
-          margin: 0 auto;
-        }
-        .rp-doc{
-          background:#fff;
-          border:2px solid ${border};
-        }
-
-        @page { size: A4; margin: 10mm; }
-        @media print{
-          body{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .rp-print-page{ background:#fff; padding:0; }
-          .rp-a4{ max-width: none; margin:0; }
-          .rp-doc{ border:2px solid ${border}; }
-        }
-
-        /* Header */
-        .rp-headerbox{
-          border-bottom: 2px solid ${border};
-          padding: 12px 12px 6px 12px;
-        }
-        .rp-head-grid{
-          display:grid;
-          grid-template-columns: 170px 1fr;
-          gap: 10px;
-          align-items:center;
-        }
-        .rp-head-logo{ display:flex; justify-content:center; align-items:center; }
-        .rp-head-center{ text-align:center; }
-        .rp-title{
-          color:${red};
-          font-size: 34px;
-          font-weight: 900;
-          letter-spacing: .08em;
-          line-height:1.1;
-        }
-        .rp-sub{
-          font-size: 11px;
-          font-weight: 700;
-          letter-spacing: .02em;
-          margin-top: 2px;
-        }
-        .rp-addr{
-          margin-top: 6px;
-          font-size: 12px;
-          font-weight: 700;
-        }
-        .rp-line{
-          margin-top: 4px;
-          font-size: 11px;
-          font-weight: 700;
-        }
-        .rp-red{ color:${red}; font-weight:900; }
-        .rp-doc-type{
-          margin-top: 6px;
-          color:${red};
-          font-size: 13px;
-          font-weight: 900;
-          letter-spacing: .15em;
-        }
-
-        /* Row 2 boxes */
-        .rp-row2{
-          display:grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 16px;
-          padding: 10px 12px 12px 12px;
-        }
-        .rp-box{
-          border: 2px solid ${border};
-        }
-        .rp-box-head{
-          background:${red};
-          color:#fff;
-          font-weight: 900;
-          letter-spacing: .06em;
-          font-size: 12px;
-          padding: 7px 10px;
-          text-transform: uppercase;
-          display:flex;
-          justify-content:flex-start;
-        }
-        .rp-box-head-split{
-          justify-content: space-between;
-          gap: 10px;
-        }
-        .rp-box-body{
-          padding: 10px 10px 8px 10px;
-          font-size: 12px;
-          font-weight: 700;
-        }
-        .rp-field{
-          display:grid;
-          grid-template-columns: 140px 1fr;
-          gap: 8px;
-          padding: 4px 0;
-        }
-        .rp-sales{
-          grid-template-columns: 140px 1fr;
-        }
-        .rp-lbl{
-          color:${red};
-          font-weight: 900;
-          text-transform: uppercase;
-        }
-        .rp-val{ color:#111; font-weight: 800; }
-        .rp-dual{
-          grid-template-columns: 1fr 1fr;
-          gap: 10px;
-        }
-        .rp-dual-left, .rp-dual-right{
-          display:grid;
-          grid-template-columns: 60px 1fr;
-          gap: 8px;
-          align-items:center;
-        }
-
-        /* Table */
-        .rp-tablebox{
-          border-top: 2px solid ${border};
-          border-bottom: 2px solid ${border};
-          margin: 0 12px;
-        }
-        .rp-table{
-          width:100%;
-          border-collapse: collapse;
-          table-layout: fixed;
-        }
-        .rp-table thead th{
-          background:${red};
-          color:#fff;
-          font-size: 11px;
-          font-weight: 900;
-          letter-spacing: .04em;
-          padding: 8px 6px;
-          border: 1px solid ${border};
-          text-transform: uppercase;
-        }
-        .rp-table td{
-          border: 1px solid ${border};
-          padding: 7px 6px;
-          font-size: 11px;
-          font-weight: 700;
-          vertical-align: top;
-          height: 28px;
-        }
-        .rp-table .rp-desc{ width: 26%; }
-        .rp-num{ text-align:center; font-variant-numeric: tabular-nums; }
-        .rp-money{ text-align:right; font-variant-numeric: tabular-nums; }
-        .rp-empty{ text-align:center; padding: 18px 6px; font-weight: 900; }
-        .rp-blank td{ height: 28px; }
-
-        /* Bottom area */
-        .rp-bottom{
-          display:grid;
-          grid-template-columns: 1.2fr .8fr;
-          gap: 14px;
-          padding: 12px;
-          align-items: start;
-        }
-        .rp-notes{
-          border-left: 2px solid ${border};
-          padding-left: 10px;
-        }
-        .rp-notes-title{
-          color:${red};
-          font-weight: 900;
-          font-style: italic;
-          margin-bottom: 6px;
-        }
-        .rp-notes ul{
-          margin: 0;
-          padding-left: 16px;
-          font-size: 11px;
-          font-weight: 700;
-          line-height: 1.35;
-        }
-        .rp-notes li{ margin: 6px 0; }
-        .rp-totals{
-          border: 2px solid ${border};
-        }
-        .rp-totals-table{
-          width:100%;
-          border-collapse: collapse;
-        }
-        .rp-totals-table td{
-          border: 1px solid ${border};
-          padding: 8px 8px;
-          font-size: 11px;
-          font-weight: 900;
-          text-transform: uppercase;
-        }
-
-        /* Signatures */
-        .rp-sign{
-          display:grid;
-          grid-template-columns: 1fr 1fr 1fr;
-          gap: 18px;
-          padding: 26px 12px 14px 12px;
-          border-top: 2px solid ${border};
-        }
-        .rp-sign-col{ text-align:center; }
-        .rp-sign-line{
-          height: 1px;
-          background: ${border};
-          margin: 18px 0 8px 0;
-        }
-        .rp-sign-label{
-          font-size: 11px;
-          font-weight: 900;
-        }
-        .rp-sign-sub{
-          margin-top: 6px;
-          font-size: 11px;
-          font-weight: 700;
-        }
-
-        /* Bottom strip */
-        .rp-strip{
-          background:${red};
-          color:#fff;
-          font-weight: 900;
-          font-style: italic;
-          text-align:center;
-          padding: 8px 10px;
-          border-top: 2px solid ${border};
-          letter-spacing: .02em;
-          font-size: 12px;
-        }
-
-        /* Mobile: stack boxes */
-        @media (max-width: 860px){
-          .rp-row2{ grid-template-columns: 1fr; }
-          .rp-bottom{ grid-template-columns: 1fr; }
-        }
-      `}</style>
+      <style jsx global>{baseScreenCss}</style>
     </div>
   );
 }
 
+/* ------------------ Screen (premium) CSS ------------------ */
+const baseScreenCss = `
+  .rp-soft-page{
+    padding: 18px;
+    background: radial-gradient(900px 400px at 10% 0%, rgba(184,0,0,.08), transparent 55%),
+                radial-gradient(700px 340px at 90% 0%, rgba(0,0,0,.08), transparent 55%),
+                #f3f4f6;
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  }
+  .rp-soft-card{
+    max-width: 980px;
+    margin: 0 auto;
+    background: rgba(255,255,255,.95);
+    border: 1px solid rgba(0,0,0,.08);
+    border-radius: 18px;
+    padding: 16px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.10);
+  }
+  .rp-soft-title{ font-weight: 1000; font-size: 16px; margin-bottom: 6px;}
+  .rp-soft-err{ color:#e11d48; font-weight: 900; margin-bottom: 12px;}
 
+  .rp-ui-btn{
+    border: 1px solid rgba(0,0,0,.12);
+    background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,245,245,.98));
+    border-radius: 14px;
+    padding: 10px 12px;
+    font-weight: 950;
+    cursor: pointer;
+    box-shadow: 0 10px 22px rgba(0,0,0,.10);
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+  }
+  .rp-ui-btn:hover{
+    transform: translateY(-1px);
+    box-shadow: 0 14px 30px rgba(0,0,0,.14);
+    filter: brightness(1.02);
+  }
+  .rp-ui-btn:active{ transform: translateY(0); box-shadow: 0 10px 22px rgba(0,0,0,.10); }
+  .rp-ui-btn:disabled{ opacity:.55; cursor:not-allowed; transform:none; }
+
+  .rp-ui-btn__dot{
+    width: 10px; height: 10px; border-radius: 999px;
+    background: radial-gradient(circle at 30% 30%, #fff, rgba(255,255,255,.2) 40%, rgba(255,255,255,0) 70%),
+                #b80000;
+    box-shadow: 0 0 0 4px rgba(184,0,0,.10);
+  }
+
+  .rp-ui-btn--brand{
+    background: linear-gradient(180deg, rgba(184,0,0,.98), rgba(150,0,0,.98));
+    color:#fff;
+    border-color: rgba(184,0,0,.55);
+  }
+  .rp-ui-btn--brand:hover{ filter: brightness(1.06); }
+  .rp-ui-btn--danger{
+    background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,245,245,.98));
+    color:#7f1d1d;
+    border-color: rgba(127,29,29,.35);
+  }
+
+  .rp-badge{
+    font-weight: 1000;
+    font-size: 12px;
+    padding: 7px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(0,0,0,.12);
+    background: rgba(255,255,255,.95);
+    display: inline-flex;
+    align-items:center;
+    gap: 8px;
+  }
+  .rp-badge--issued{ color:#065f46; border-color: rgba(6,95,70,.22); background: rgba(16,185,129,.10); }
+  .rp-badge--void{ color:#991b1b; border-color: rgba(153,27,27,.22); background: rgba(239,68,68,.10); }
+
+  .rp-soft-pill{
+    padding: 8px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.92);
+    border: 1px solid rgba(0,0,0,.08);
+    font-weight: 900;
+  }
+
+  .rp-note{
+    max-width: 980px;
+    margin: 10px auto 0 auto;
+    border-radius: 14px;
+    padding: 10px 12px;
+    font-weight: 950;
+    border: 1px solid rgba(0,0,0,.10);
+  }
+  .rp-note--warn{
+    background: rgba(239,68,68,.10);
+    border-color: rgba(153,27,27,.18);
+    color:#991b1b;
+  }
+
+  .rp-print-shell{
+    background: radial-gradient(900px 400px at 10% 0%, rgba(184,0,0,.08), transparent 55%),
+                radial-gradient(700px 340px at 90% 0%, rgba(0,0,0,.08), transparent 55%),
+                #f3f4f6;
+    min-height: 100vh;
+    padding: 16px 10px;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+
+  .rp-print-top{
+    max-width: 980px;
+    margin: 0 auto 10px auto;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap: 10px;
+    background: rgba(255,255,255,.92);
+    border: 1px solid rgba(0,0,0,.08);
+    border-radius: 18px;
+    padding: 12px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.10);
+  }
+  .rp-print-left, .rp-print-right{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+`;

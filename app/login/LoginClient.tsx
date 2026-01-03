@@ -14,12 +14,11 @@ export default function LoginClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /* =====================
-     REMEMBER USERNAME
-  ===================== */
   useEffect(() => {
-    const saved = localStorage.getItem("rp_remember_username");
-    if (saved) setUsername(saved);
+    try {
+      const saved = localStorage.getItem("rp_remember_username");
+      if (saved) setUsername(saved);
+    } catch {}
   }, []);
 
   const nextPath = useMemo(() => {
@@ -32,31 +31,52 @@ export default function LoginClient() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return;
+
+    const u = username.trim();
+    if (!u || !password) {
+      setError("Username and password are required.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
+      // clear stale session before trying
+      localStorage.removeItem("rp_user");
+
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: u, password }),
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
 
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error || "Invalid username or password");
+      if (!res.ok || json?.ok !== true) {
+        throw new Error(json?.error || "Invalid username or password");
       }
 
+      const sessionObj = json.session;
+      if (!sessionObj) throw new Error("Login response missing session");
+
+      // Store session for x-rp-user header usage
+      localStorage.setItem("rp_user", JSON.stringify(sessionObj));
+
       if (remember) {
-        localStorage.setItem("rp_remember_username", username);
+        localStorage.setItem("rp_remember_username", u);
       } else {
         localStorage.removeItem("rp_remember_username");
       }
 
       router.replace(nextPath);
     } catch (err: any) {
-      setError(err.message || "Login failed");
+      // ensure no partial session remains
+      try {
+        localStorage.removeItem("rp_user");
+      } catch {}
+      setError(err?.message || "Login failed");
     } finally {
       setLoading(false);
     }
@@ -65,15 +85,9 @@ export default function LoginClient() {
   return (
     <div className="rp-login-wrap">
       <div className="rp-login-card">
-        {/* LOGO HEADER */}
         <div className="rp-login-top">
           <div className="rp-login-logo-bg">
-            <img
-              src="/images/logo/logo.png"
-              alt="Ram Pottery Ltd"
-              width={44}
-              height={44}
-            />
+            <img src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={44} height={44} />
           </div>
 
           <h1 className="rp-login-title">RamPotteryHub</h1>
@@ -81,50 +95,61 @@ export default function LoginClient() {
         </div>
 
         <form onSubmit={handleSubmit} className="rp-login-form">
-          <label className="rp-field">
+          <label className="rp-login-field">
             <span>Username</span>
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
+              inputMode="text"
+              placeholder="e.g. sales01"
+              disabled={loading}
             />
           </label>
 
-          <label className="rp-field">
+          <label className="rp-login-field">
             <span>Password</span>
             <input
               type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
+              placeholder="••••••••"
+              disabled={loading}
             />
           </label>
 
           <div className="rp-login-options">
-            <label>
+            <label className="rp-check">
               <input
                 type="checkbox"
                 checked={showPassword}
                 onChange={() => setShowPassword(!showPassword)}
-              />{" "}
+                disabled={loading}
+              />
               Show password
             </label>
 
-            <label>
+            <label className="rp-check">
               <input
                 type="checkbox"
                 checked={remember}
                 onChange={() => setRemember(!remember)}
-              />{" "}
+                disabled={loading}
+              />
               Remember username
             </label>
           </div>
 
           {error && <div className="rp-login-error">{error}</div>}
 
-          <button className="btn-primary-red" disabled={loading}>
+          <button className="rp-login-btn" disabled={loading}>
             {loading ? "Signing in…" : "Sign in"}
           </button>
+
+          <div className="rp-login-footnote">
+            If you forgot your password, contact the system administrator.
+          </div>
         </form>
       </div>
     </div>

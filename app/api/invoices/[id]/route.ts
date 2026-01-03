@@ -1,16 +1,32 @@
 // app/api/invoices/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import { createClient } from "@supabase/supabase-js";
+import { getUserFromHeader } from "@/lib/payments";
+
+export const dynamic = "force-dynamic";
+
+function supaAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createClient(url, service);
+}
 
 export async function GET(
-  _req: NextRequest,
-  context: { params: Promise<{ id: string }> }
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> } // ✅ FINAL FIX
 ) {
   try {
-    const { id } = await context.params;
+    const user = getUserFromHeader(req.headers.get("x-rp-user"));
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await context.params; // ✅ FINAL FIX
 
     const numericId = Number(id);
     const useNumeric = Number.isFinite(numericId) && numericId > 0;
+
+    const supabase = supaAdmin();
 
     // 1) Load invoice
     const { data: invoice, error: invErr } = await supabase
@@ -60,7 +76,7 @@ export async function GET(
       return NextResponse.json({ ok: false, error: "Invoice not found" }, { status: 404 });
     }
 
-    // 2) Load items (join products so UI can show item_code + name)
+    // 2) Load items
     const { data: items, error: itemsErr } = await supabase
       .from("invoice_items")
       .select(
@@ -68,7 +84,9 @@ export async function GET(
         id,
         invoice_id,
         product_id,
+        uom,
         box_qty,
+        pcs_qty,
         units_per_box,
         total_qty,
         unit_price_excl_vat,

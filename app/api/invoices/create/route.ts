@@ -1,82 +1,199 @@
+// app/api/invoices/create/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import { createClient } from "@supabase/supabase-js";
+import { getUserFromHeader } from "@/lib/payments";
 
-function nextInvoiceNumber(lastId: number | null): string {
-  const next = (lastId ?? 0) + 1;
-  return "RP-" + String(next).padStart(4, "0");
+export const dynamic = "force-dynamic";
+
+type RawInvoiceItem = {
+  product_id?: number | string;
+  productId?: number | string;
+
+  uom?: "BOX" | "PCS" | string;
+
+  box_qty?: number | string;
+  boxQty?: number | string;
+
+  pcs_qty?: number | string;
+  pcsQty?: number | string;
+
+  units_per_box?: number | string;
+  unitsPerBox?: number | string;
+
+  unit_price_excl_vat?: number | string;
+  unitPriceExclVat?: number | string;
+
+  vat_rate?: number | string;
+  vatRate?: number | string;
+
+  line_total?: number | string;
+
+  description?: string | null;
+};
+
+type NormalizedItem = {
+  product_id: number;
+  description: string | null;
+
+  uom: "BOX" | "PCS";
+  box_qty: number | null;
+  pcs_qty: number | null;
+  units_per_box: number; // always >= 1
+  total_qty: number; // integer
+
+  unit_price_excl_vat: number;
+  vat_rate: number; // %
+  unit_vat: number;
+  unit_price_incl_vat: number;
+  line_total: number;
+};
+
+function n2(v: any): number {
+  const x = Number(v ?? 0);
+  return Number.isFinite(x) ? x : 0;
 }
 
-function toNumber(v: any) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function supaAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !service) {
+    throw new Error(
+      "Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY"
+    );
+  }
+  return createClient(url, service);
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const user = getUserFromHeader(req.headers.get("x-rp-user"));
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
 
-    const {
-      customerId,
-      invoiceDate,
-      purchaseOrderNo,
-      salesRep,
+    const body: any = await req.json().catch(() => ({}));
 
-      vatPercent,
-      discountPercent, // will be 0
-      discountAmount, // will be 0
+    const customerId = body.customerId ?? body.customer_id;
+    const invoiceDate = body.invoiceDate ?? body.invoice_date;
+    const purchaseOrderNo = body.purchaseOrderNo ?? body.purchase_order_no ?? null;
 
-      previousBalance,
-      amountPaid,
-      subtotal,
-      vatAmount,
-      totalAmount,
-      balanceRemaining,
-      grossTotal,
+    const salesRep = body.salesRep ?? body.sales_rep ?? null;
+    const salesRepPhone = body.salesRepPhone ?? body.sales_rep_phone ?? null;
 
-      items,
-    } = body;
+    const previousBalance = n2(body.previousBalance ?? body.previous_balance ?? 0);
+    const amountPaid = n2(body.amountPaid ?? body.amount_paid ?? 0);
 
-    if (!customerId || !invoiceDate || !Array.isArray(items) || !items.length) {
+    const items: RawInvoiceItem[] = (Array.isArray(body.items) ? body.items : []) as RawInvoiceItem[];
+    if (!customerId || !invoiceDate || items.length === 0) {
       return NextResponse.json(
         { ok: false, error: "Missing required invoice data." },
         { status: 400 }
       );
     }
 
-    // 1) Get last invoice id for invoice number
-    const { data: lastInv, error: lastErr } = await supabase
-      .from("invoices")
-      .select("id")
-      .order("id", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const supabase = supaAdmin();
 
-    if (lastErr) throw lastErr;
+    // Normalize items:
+    // - uom: BOX or PCS
+    // - if PCS: store pcs_qty, box_qty = null, units_per_box = 1, total_qty = pcs_qty
+    // - if BOX: store box_qty, pcs_qty = null, units_per_box required, total_qty = box_qty * units_per_box
+    const normalizedItems: NormalizedItem[] = items.map((it, idx) => {
+      const pid = Number(it.product_id ?? it.productId);
+      if (!Number.isFinite(pid)) throw new Error(`Item #${idx + 1}: Missing product_id`);
 
-    const invoiceNumber = nextInvoiceNumber(lastInv?.id ?? null);
+      const uom: "BOX" | "PCS" = (it.uom ?? "BOX") === "PCS" ? "PCS" : "BOX";
 
-    // 2) Insert invoice
+      const boxQtyRaw = n2(it.box_qty ?? it.boxQty ?? 0);
+      const pcsQtyRaw = n2(it.pcs_qty ?? it.pcsQty ?? 0);
+
+      // qty is integer count of selected UOM
+      const qty =
+        uom === "PCS" ? Math.trunc(pcsQtyRaw || boxQtyRaw) : Math.trunc(boxQtyRaw);
+
+      const upb =
+        uom === "PCS"
+          ? 1
+          : Math.max(1, Math.trunc(n2(it.units_per_box ?? it.unitsPerBox ?? 1)));
+
+      const totalQty = uom === "PCS" ? qty : qty * upb;
+
+      const unitEx = n2(it.unit_price_excl_vat ?? it.unitPriceExclVat ?? 0);
+      const vatPercent = clamp(n2(it.vat_rate ?? it.vatRate ?? 15), 0, 100);
+      const unitVat = unitEx * (vatPercent / 100);
+      const unitIncl = unitEx + unitVat;
+
+      const lineTotal = n2(it.line_total ?? unitIncl * totalQty);
+
+      return {
+        product_id: pid,
+        description: (it.description ?? null) as string | null,
+
+        uom,
+        box_qty: uom === "BOX" ? qty : null,
+        pcs_qty: uom === "PCS" ? qty : null,
+        units_per_box: upb,
+        total_qty: totalQty,
+
+        unit_price_excl_vat: unitEx,
+        vat_rate: vatPercent,
+        unit_vat: unitVat,
+        unit_price_incl_vat: unitIncl,
+        line_total: lineTotal,
+      };
+    });
+
+    // Totals (NO generic type args; typed accumulator)
+    const subtotal = normalizedItems.reduce(
+      (sum: number, it: NormalizedItem) =>
+        sum + n2(it.total_qty) * n2(it.unit_price_excl_vat),
+      0
+    );
+
+    const vatAmount = normalizedItems.reduce(
+      (sum: number, it: NormalizedItem) => sum + n2(it.total_qty) * n2(it.unit_vat),
+      0
+    );
+
+    const totalAmount = subtotal + vatAmount;
+
+    const grossTotal = totalAmount + previousBalance;
+    const balanceRemaining = Math.max(0, grossTotal - amountPaid);
+
+    // Create invoice
     const { data: newInv, error: invError } = await supabase
       .from("invoices")
       .insert({
-        invoice_number: invoiceNumber,
         customer_id: customerId,
         invoice_date: invoiceDate,
-        purchase_order_no: purchaseOrderNo || null,
-        sales_rep: salesRep || null,
+        due_date: null,
+
+        purchase_order_no: purchaseOrderNo,
+        sales_rep: salesRep,
+        sales_rep_phone: salesRepPhone,
 
         subtotal,
+        vat_percent: null, // per-line vat is stored in items
         vat_amount: vatAmount,
         total_amount: totalAmount,
+
+        total_excl_vat: subtotal,
+        total_incl_vat: totalAmount,
+        gross_total: grossTotal,
+
         previous_balance: previousBalance,
         amount_paid: amountPaid,
-        gross_total: grossTotal ?? totalAmount,
         balance_remaining: balanceRemaining,
-        status: "UNPAID",
+        balance_due: balanceRemaining,
 
-        vat_percent: vatPercent,
-        discount_percent: discountPercent ?? 0,
-        discount_amount: discountAmount ?? 0,
+        discount_percent: 0,
+        discount_amount: 0,
+
+        status: "ISSUED",
       })
       .select("id, invoice_number")
       .single();
@@ -85,17 +202,10 @@ export async function POST(req: NextRequest) {
 
     const invoiceId = newInv.id;
 
-    // 3) Insert invoice items
-    const itemsToInsert = items.map((it: any) => ({
+    // Insert items
+    const itemsToInsert = normalizedItems.map((it) => ({
       invoice_id: invoiceId,
-      product_id: it.product_id,
-      box_qty: it.box_qty,
-      units_per_box: it.units_per_box,
-      total_qty: it.total_qty,
-      unit_price_excl_vat: it.unit_price_excl_vat,
-      unit_vat: it.unit_vat,
-      unit_price_incl_vat: it.unit_price_incl_vat ?? null,
-      line_total: it.line_total ?? null,
+      ...it,
     }));
 
     const { error: itemsError } = await supabase
@@ -103,41 +213,58 @@ export async function POST(req: NextRequest) {
       .insert(itemsToInsert);
 
     if (itemsError) {
-      // rollback invoice to avoid orphan invoice
       await supabase.from("invoices").delete().eq("id", invoiceId);
       throw itemsError;
     }
 
-    // 4) AUTO STOCK MOVEMENT (OUT) — uses your DB trigger to apply stock
-    // movement_type allowed: IN / OUT / ADJUSTMENT ; quantity must be > 0
-    const movementsToInsert = items
-      .map((it: any) => {
-        const pid = Number(it.product_id);
-        const qty = Math.abs(toNumber(it.total_qty));
-        if (!pid || qty <= 0) return null;
+    // STOCK UPDATE:
+    // - decrement products.current_stock by total_qty per item
+    // - best effort insert stock_movements (if table exists)
+    for (const it of normalizedItems) {
+      const pid = it.product_id;
+      const qty = Math.trunc(n2(it.total_qty));
 
-        return {
-          product_id: pid,
-          movement_type: "OUT",
-          quantity: qty,
-          reference: newInv.invoice_number, // nice reference for audit trail
-          source_table: "invoices",
-          source_id: invoiceId,
-          notes: null,
-        };
-      })
-      .filter(Boolean) as any[];
+      if (qty <= 0) continue;
 
-    if (movementsToInsert.length) {
-      const { error: mvErr } = await supabase
-        .from("stock_movements")
-        .insert(movementsToInsert);
+      const { data: pRow, error: pErr } = await supabase
+        .from("products")
+        .select("id, current_stock")
+        .eq("id", pid)
+        .single();
 
-      if (mvErr) {
-        // rollback: delete inserted invoice + items; movements are tied to invoice id anyway
+      if (pErr || !pRow) {
+        // rollback invoice to prevent inconsistent state
         await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
         await supabase.from("invoices").delete().eq("id", invoiceId);
-        throw mvErr;
+        throw new Error(`Stock update failed (product ${pid} not found)`);
+      }
+
+      const current = Math.trunc(n2(pRow.current_stock));
+      const next = Math.max(0, current - qty);
+
+      const { error: upErr } = await supabase
+        .from("products")
+        .update({ current_stock: next })
+        .eq("id", pid);
+
+      if (upErr) {
+        await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
+        await supabase.from("invoices").delete().eq("id", invoiceId);
+        throw new Error(`Stock update failed (product ${pid})`);
+      }
+
+      // optional movement log (ignore if table missing)
+      try {
+        await supabase.from("stock_movements").insert({
+          product_id: pid,
+          movement_date: invoiceDate,
+          movement_type: "SALE",
+          quantity_change: -qty,
+          reference: `INV:${newInv.invoice_number}`,
+          notes: it.uom === "PCS" ? `PCS sale` : `BOX sale`,
+        });
+      } catch {
+        // ignore if table not present
       }
     }
 
@@ -147,7 +274,7 @@ export async function POST(req: NextRequest) {
       invoiceNumber: newInv.invoice_number,
     });
   } catch (err: any) {
-    console.error(err);
+    console.error("Create invoice error:", err);
     return NextResponse.json(
       { ok: false, error: err?.message || "Failed to create invoice" },
       { status: 500 }

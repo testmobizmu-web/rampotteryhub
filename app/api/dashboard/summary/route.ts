@@ -1,147 +1,106 @@
 // app/api/dashboard/summary/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+
+export const dynamic = "force-dynamic";
+
+function toNum(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export async function GET(_req: NextRequest) {
   try {
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
+    // invoice_date is stored as YYYY-MM-DD
     const todayStr = today.toISOString().slice(0, 10);
     const monthStartStr = startOfMonth.toISOString().slice(0, 10);
 
-    // 1) TOTAL SALES TODAY
-    const { data: todaySalesData } = await supabase
-      .from("invoices")
-      .select("total_amount, invoice_date")
-      .gte("invoice_date", todayStr)
-      .lte("invoice_date", todayStr);
+    const [todaySalesRes, monthSalesRes, outstandingRes, productsRes, recentInvoicesRes] =
+      await Promise.all([
+        // 1) TOTAL SALES TODAY
+        supabaseAdmin.from("invoices").select("total_amount").eq("invoice_date", todayStr),
+
+        // 2) TOTAL SALES THIS MONTH
+        supabaseAdmin
+          .from("invoices")
+          .select("total_amount")
+          .gte("invoice_date", monthStartStr)
+          .lte("invoice_date", todayStr),
+
+        // 3) OUTSTANDING BALANCE
+        supabaseAdmin.from("invoices").select("balance_remaining"),
+
+        // 4) LOW STOCK (✅ removed uom)
+        supabaseAdmin
+          .from("products")
+          .select("id, sku, name, current_stock, reorder_level")
+          .limit(2000),
+
+        // 5) RECENT INVOICES
+        supabaseAdmin
+          .from("invoices")
+          .select(
+            `
+              id,
+              invoice_number,
+              invoice_date,
+              total_amount,
+              status,
+              customers ( name )
+            `
+          )
+          .order("invoice_date", { ascending: false })
+          .limit(10),
+      ]);
+
+    if (todaySalesRes.error) throw new Error(`today sales: ${todaySalesRes.error.message}`);
+    if (monthSalesRes.error) throw new Error(`month sales: ${monthSalesRes.error.message}`);
+    if (outstandingRes.error) throw new Error(`outstanding: ${outstandingRes.error.message}`);
+    if (productsRes.error) throw new Error(`products: ${productsRes.error.message}`);
+    if (recentInvoicesRes.error) throw new Error(`recent invoices: ${recentInvoicesRes.error.message}`);
 
     const totalSalesToday =
-      todaySalesData?.reduce(
-        (sum, row: any) => sum + (row.total_amount || 0),
-        0
-      ) || 0;
-
-    // 2) TOTAL SALES THIS MONTH
-    const { data: monthSalesData } = await supabase
-      .from("invoices")
-      .select("total_amount, invoice_date")
-      .gte("invoice_date", monthStartStr)
-      .lte("invoice_date", todayStr);
+      (todaySalesRes.data || []).reduce((sum: number, r: any) => sum + toNum(r.total_amount), 0) || 0;
 
     const totalSalesMonth =
-      monthSalesData?.reduce(
-        (sum, row: any) => sum + (row.total_amount || 0),
-        0
-      ) || 0;
-
-    // 3) OUTSTANDING BALANCE
-    const { data: outstandingData } = await supabase
-      .from("invoices")
-      .select("balance_remaining");
+      (monthSalesRes.data || []).reduce((sum: number, r: any) => sum + toNum(r.total_amount), 0) || 0;
 
     const outstanding =
-      outstandingData?.reduce(
-        (sum, row: any) => sum + (row.balance_remaining || 0),
-        0
-      ) || 0;
+      (outstandingRes.data || []).reduce((sum: number, r: any) => sum + toNum(r.balance_remaining), 0) || 0;
 
-    // 4) LOW STOCK PRODUCTS
-    const { data: lowStock } = await supabase
-      .from("products")
-      .select("id, sku, name, current_stock, reorder_level")
-      .not("reorder_level", "is", null)
-      .lte("current_stock", "reorder_level")
-      .order("current_stock", { ascending: true })
-      .limit(10);
+    const lowStock = (productsRes.data || [])
+      .map((p: any) => {
+        const current = toNum(p.current_stock);
+        const reorder = p.reorder_level === null || p.reorder_level === undefined ? null : toNum(p.reorder_level);
 
-    // 5) RECENT INVOICES (LAST 10)
-    const { data: recentInvoices } = await supabase
-      .from("invoices")
-      .select(
-        `
-        id,
-        invoice_number,
-        invoice_date,
-        total_amount,
-        status,
-        customers ( name )
-      `
-      )
-      .order("invoice_date", { ascending: false })
-      .limit(10);
-
-    // 6) SALES BY MONTH (LAST 6 MONTHS)
-    const sixMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 5, 1);
-    const sixMonthsAgoStr = sixMonthsAgo.toISOString().slice(0, 10);
-
-    const { data: salesByMonth } = await supabase
-      .from("invoices")
-      .select("total_amount, invoice_date")
-      .gte("invoice_date", sixMonthsAgoStr);
-
-    const monthlyTotals: Record<string, number> = {};
-    salesByMonth?.forEach((row: any) => {
-      const d = new Date(row.invoice_date);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-        2,
-        "0"
-      )}`;
-      monthlyTotals[key] = (monthlyTotals[key] || 0) + (row.total_amount || 0);
-    });
-
-    const monthlyLabels = Object.keys(monthlyTotals).sort();
-    const monthlyValues = monthlyLabels.map((k) => monthlyTotals[k]);
-
-    // 7) SALES BY CUSTOMER (TOP 5)
-    const { data: salesByCustomer } = await supabase
-      .from("invoices")
-      .select(`total_amount, customers ( name )`);
-
-    const customerTotals: Record<string, number> = {};
-    salesByCustomer?.forEach((row: any) => {
-      const name = row.customers?.name || "Unknown";
-      customerTotals[name] =
-        (customerTotals[name] || 0) + (row.total_amount || 0);
-    });
-
-    const customerEntries = Object.entries(customerTotals).sort(
-      (a, b) => b[1] - a[1]
-    );
-    const topCustomerEntries = customerEntries.slice(0, 5);
-    const customerLabels = topCustomerEntries.map(([name]) => name);
-    const customerValues = topCustomerEntries.map(([, total]) => total);
-
-    // 8) CREDIT NOTES (THIS MONTH) — from your real table credit_notes
-    const { data: creditRows } = await supabase
-      .from("credit_notes")
-      .select("total_amount, credit_note_date")
-      .gte("credit_note_date", monthStartStr)
-      .lte("credit_note_date", todayStr);
-
-    const creditNotesTotal =
-      creditRows?.reduce((sum: number, r: any) => sum + (r.total_amount ?? 0), 0) ?? 0;
+        return {
+          id: p.id,
+          item_code: p.sku || null,
+          name: p.name || null,
+          qty: current,
+          min_qty: reorder,
+        };
+      })
+      .filter((p: any) => p.min_qty !== null && p.min_qty > 0 && p.qty <= p.min_qty)
+      .sort((a: any, b: any) => a.qty - b.qty)
+      .slice(0, 10);
 
     return NextResponse.json({
+      ok: true,
       totalSalesToday,
       totalSalesMonth,
       outstanding,
-      lowStock: lowStock || [],
-      recentInvoices: recentInvoices || [],
-      monthlyLabels,
-      monthlyValues,
-      customerLabels,
-      customerValues,
-      creditNotesTotal,
+      lowStock,
+      recentInvoices: recentInvoicesRes.data || [],
     });
   } catch (err: any) {
-    console.error(err);
+    console.error("dashboard/summary error:", err);
     return NextResponse.json(
-      { error: err?.message || "Failed to load dashboard" },
+      { ok: false, error: err?.message || "Failed to load dashboard" },
       { status: 500 }
     );
   }
 }
-
-

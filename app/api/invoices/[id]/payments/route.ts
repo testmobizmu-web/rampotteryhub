@@ -15,17 +15,28 @@ function supaAdmin() {
   return createClient(url, service || anon!);
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> } // ✅ REQUIRED
+) {
   try {
-    const { id } = await ctx.params;
+    const { id } = await context.params; // ✅ REQUIRED
 
     const invoiceId = Number(id);
     if (!Number.isFinite(invoiceId) || invoiceId <= 0) {
-      return NextResponse.json({ ok: false, error: "Invalid invoice id" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Invalid invoice id" },
+        { status: 400 }
+      );
     }
 
     const user = getUserFromHeader(req.headers.get("x-rp-user"));
-    if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    if (!user) {
+      return NextResponse.json(
+        { ok: false, error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
 
     const supabase = supaAdmin();
 
@@ -36,7 +47,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       .order("payment_date", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
-    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({ ok: true, payments: data || [] });
   } catch (err: any) {
@@ -46,3 +62,4 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     );
   }
 }
+

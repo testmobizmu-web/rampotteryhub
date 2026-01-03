@@ -28,14 +28,12 @@ export async function GET(
         total_amount,
         status,
         customers (
-          id,
-          name,
-          address,
-          phone,
-          brn,
-          vat_no,
-          customer_code
-        )
+         name,
+         address,
+         phone,
+         vat_no,
+         customer_code
+       )
       `
       )
       .eq(useNumeric ? "id" : "credit_note_number", useNumeric ? numericId : id)
