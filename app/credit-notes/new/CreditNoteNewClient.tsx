@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 const VAT_RATE = 0.15;
 
-/** === Adjust these to match your real company header === */
 const COMPANY = {
   name: "RAM POTTERY LTD",
   tagline1: "MANUFACTURER & IMPORTER OF QUALITY CLAY",
@@ -49,20 +48,41 @@ function money(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function fmtDateTime(d: Date) {
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(
+    d.getSeconds()
+  )}`;
+}
+
 export default function CreditNoteNewClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  // toast
+  const [toast, setToast] = useState<string | null>(null);
+  function showToast(msg: string) {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 2400);
+  }
+
+  const [lastSync, setLastSync] = useState<string>("—");
+  const [dark, setDark] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [loadingLists, setLoadingLists] = useState(true);
 
   const [customerId, setCustomerId] = useState("");
   const [creditNoteDate, setCreditNoteDate] = useState(new Date().toISOString().slice(0, 10));
-  const [invoiceId, setInvoiceId] = useState(""); // optional link
+  const [invoiceId, setInvoiceId] = useState("");
   const [reason, setReason] = useState("");
 
+  const [saving, setSaving] = useState(false);
+
   const [items, setItems] = useState<CNItem[]>([
-    {
+    recalc({
       id: 1,
       productId: "",
       sku: "",
@@ -72,18 +92,19 @@ export default function CreditNoteNewClient() {
       unitVat: 0,
       unitIncl: 0,
       lineTotal: 0,
-    },
+    }),
   ]);
 
-  /* ===== theme + mobile drawer (same pattern as your dashboard) ===== */
-  const [dark, setDark] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // refs for fast data entry
+  const customerRef = useRef<HTMLSelectElement | null>(null);
+  const reasonRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("rp_theme") : null;
     const isDark = saved === "dark";
     setDark(isDark);
     document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
+    setLastSync(fmtDateTime(new Date()));
   }, []);
 
   function toggleTheme() {
@@ -102,28 +123,42 @@ export default function CreditNoteNewClient() {
     };
   }, [mobileNavOpen]);
 
-  // close on ESC
+  // ESC closes drawer; Enter saves (when not typing in textarea)
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileNavOpen(false);
+      if (e.key === "Escape") {
+        if (mobileNavOpen) setMobileNavOpen(false);
+        return;
+      }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        void save();
+      }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [mobileNavOpen, items, customerId, creditNoteDate, invoiceId, reason]);
 
-  /* ===== data ===== */
+  // load customers/products
   useEffect(() => {
     async function load() {
-      const { data: c } = await supabase.from("customers").select("id, name, customer_code").order("name");
-      setCustomers((c ?? []) as Customer[]);
+      setLoadingLists(true);
+      try {
+        const { data: c } = await supabase.from("customers").select("id, name, customer_code").order("name");
+        setCustomers((c ?? []) as Customer[]);
 
-      const { data: p } = await supabase.from("products").select("id, sku, name, selling_price").order("sku");
-      setProducts((p ?? []) as Product[]);
+        const { data: p } = await supabase.from("products").select("id, sku, name, selling_price").order("sku");
+        setProducts((p ?? []) as Product[]);
+      } finally {
+        setLoadingLists(false);
+        setLastSync(fmtDateTime(new Date()));
+        window.setTimeout(() => customerRef.current?.focus(), 120); // ✅ autofocus customer
+      }
     }
     load();
   }, []);
 
-  // ✅ Prefill from invoice page link
+  // prefill from invoice link
   useEffect(() => {
     const cId = searchParams.get("customerId");
     const invId = searchParams.get("invoiceId");
@@ -158,7 +193,30 @@ export default function CreditNoteNewClient() {
       productId,
       sku: p?.sku || "",
       description: p?.name || "",
-      unitExcl: Number(p?.selling_price || 0),
+      unitExcl: Number(p?.selling_price || 0), // ✅ auto-fill price
+      qty: (p && items.find((x) => x.id === id)?.qty === 0) ? 1 : items.find((x) => x.id === id)?.qty || 0, // default qty=1 if empty
+    });
+
+    // ✅ auto-add next row if this was last row
+    setItems((prev) => {
+      const idx = prev.findIndex((x) => x.id === id);
+      const isLast = idx === prev.length - 1;
+      if (!isLast) return prev;
+      const nextId = prev.length + 1;
+      return [
+        ...prev,
+        recalc({
+          id: nextId,
+          productId: "",
+          sku: "",
+          description: "",
+          qty: 0,
+          unitExcl: 0,
+          unitVat: 0,
+          unitIncl: 0,
+          lineTotal: 0,
+        }),
+      ];
     });
   };
 
@@ -184,97 +242,96 @@ export default function CreditNoteNewClient() {
   };
 
   const save = async () => {
-    if (!customerId) return alert("Select a customer first.");
-    const clean = items.filter((r) => r.productId && r.qty > 0);
-    if (!clean.length) return alert("Add at least 1 item with qty > 0");
+    if (saving) return;
 
-    const res = await fetch("/api/credit-notes/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        customerId: Number(customerId),
-        creditNoteDate,
-        invoiceId: invoiceId ? Number(invoiceId) : null,
-        reason: reason || null,
-        subtotal: totals.subtotal,
-        vatAmount: totals.vat,
-        totalAmount: totals.total,
-        items: clean.map((r) => ({
-          product_id: Number(r.productId),
-          total_qty: r.qty,
-          unit_price_excl_vat: r.unitExcl,
-          unit_vat: r.unitVat,
-          unit_price_incl_vat: r.unitIncl,
-          line_total: r.lineTotal,
-        })),
-      }),
-    });
-
-    const json = await res.json();
-    if (!res.ok || !json.ok) {
-      alert(json.error || "Failed to create credit note");
+    if (!customerId) {
+      showToast("Select a customer first ⚠️");
+      customerRef.current?.focus();
       return;
     }
 
-    router.push(`/credit-notes/${json.creditNoteId}`);
+    const clean = items.filter((r) => r.productId && r.qty > 0);
+    if (!clean.length) {
+      showToast("Add at least 1 item with qty > 0 ⚠️");
+      return;
+    }
+
+    try {
+      setSaving(true);
+
+      const res = await fetch("/api/credit-notes/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId: Number(customerId),
+          creditNoteDate,
+          invoiceId: invoiceId ? Number(invoiceId) : null,
+          reason: reason || null,
+          subtotal: totals.subtotal,
+          vatAmount: totals.vat,
+          totalAmount: totals.total,
+          items: clean.map((r) => ({
+            product_id: Number(r.productId),
+            total_qty: r.qty,
+            unit_price_excl_vat: r.unitExcl,
+            unit_vat: r.unitVat,
+            unit_price_incl_vat: r.unitIncl,
+            line_total: r.lineTotal,
+          })),
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || "Failed to create credit note");
+
+      // ✅ success toast before redirect
+      showToast("Credit note created ✅");
+      window.setTimeout(() => {
+        router.push(`/credit-notes/${json.creditNoteId}`);
+      }, 650);
+    } catch (e: any) {
+      showToast(e?.message || "Failed to create credit note");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  /* ===== TEMPLATE STYLES (inline so you don't need new CSS) ===== */
+  // premium UI helpers
   const red = "#e30613";
-  const paperBg = "#ffffff";
-  const ink = "#111827";
-  const border = "rgba(17,24,39,.28)";
 
-  const box: React.CSSProperties = {
-    border: `1px solid ${border}`,
-    borderRadius: 10,
-    background: paperBg,
-    overflow: "hidden",
-  };
-
-  const boxHead: React.CSSProperties = {
-    background: red,
-    color: "white",
-    fontWeight: 900,
-    letterSpacing: ".06em",
-    fontSize: 12,
-    padding: "10px 12px",
-    textTransform: "uppercase",
-  };
-
-  const cellLabel: React.CSSProperties = {
-    fontSize: 12,
-    fontWeight: 900,
-    color: ink,
-    letterSpacing: ".02em",
-  };
-
-  const smallInput: React.CSSProperties = {
-    width: "100%",
-    height: 40,
-    borderRadius: 12,
-    border: `1px solid rgba(148,163,184,.35)`,
-    padding: "0 12px",
-    fontWeight: 850,
-    outline: "none",
-    background: "rgba(255,255,255,.92)",
-    color: ink,
-  };
-
-  const selectStyle: React.CSSProperties = {
-    ...smallInput,
-    paddingRight: 10,
-  };
+  const inputCls =
+    "w-full h-[42px] rounded-2xl border border-[rgba(148,163,184,.35)] bg-[rgba(255,255,255,.92)] px-3 font-extrabold outline-none";
+  const labelCls = "text-[12px] font-black tracking-wide text-[rgba(17,24,39,.85)]";
 
   return (
     <div className="rp-app">
-      {/* luxury background like dashboard */}
       <div className="rp-bg" aria-hidden="true">
         <span className="rp-bg-orb rp-bg-orb--1" />
         <span className="rp-bg-orb rp-bg-orb--2" />
         <span className="rp-bg-orb rp-bg-orb--3" />
         <span className="rp-bg-grid" />
       </div>
+
+      {toast && (
+        <div
+          style={{
+            position: "fixed",
+            right: 18,
+            top: 16,
+            zIndex: 9999,
+            padding: "10px 14px",
+            borderRadius: 14,
+            background: "rgba(255,255,255,.92)",
+            border: "1px solid rgba(0,0,0,.12)",
+            boxShadow: "0 16px 50px rgba(0,0,0,.18)",
+            fontWeight: 950,
+            backdropFilter: "blur(10px)",
+            maxWidth: 520,
+          }}
+        >
+          {toast}
+        </div>
+      )}
 
       <div className="rp-shell rp-enter">
         {/* Mobile top bar */}
@@ -289,7 +346,7 @@ export default function CreditNoteNewClient() {
 
           <div className="rp-mtop-brand">
             <div className="rp-mtop-title">New Credit Note</div>
-            <div className="rp-mtop-sub">Template • Premium</div>
+            <div className="rp-mtop-sub">Ctrl/⌘ + Enter = Save</div>
           </div>
 
           <button type="button" className="rp-icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
@@ -297,7 +354,6 @@ export default function CreditNoteNewClient() {
           </button>
         </div>
 
-        {/* overlay */}
         <button
           type="button"
           className={`rp-overlay ${mobileNavOpen ? "is-open" : ""}`}
@@ -305,19 +361,12 @@ export default function CreditNoteNewClient() {
           onClick={() => setMobileNavOpen(false)}
         />
 
-        {/* drawer */}
+        {/* Drawer */}
         <aside className={`rp-drawer ${mobileNavOpen ? "is-open" : ""}`} aria-label="Mobile navigation">
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
               <div className="rp-drawer-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Ltd"
-                  width={40}
-                  height={40}
-                  priority
-                  style={{ width: 40, height: 40, objectFit: "contain" }}
-                />
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={40} height={40} priority />
               </div>
               <div>
                 <div className="rp-drawer-title">Ram Pottery Ltd</div>
@@ -341,19 +390,12 @@ export default function CreditNoteNewClient() {
           </nav>
         </aside>
 
-        {/* desktop sidebar */}
+        {/* Desktop sidebar */}
         <aside className="rp-side">
           <div className="rp-side-card rp-card-anim">
             <div className="rp-brand">
               <div className="rp-brand-logo">
-                <Image
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery Ltd"
-                  width={44}
-                  height={44}
-                  priority
-                  style={{ width: 44, height: 44, objectFit: "contain" }}
-                />
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={44} height={44} priority />
               </div>
               <div className="rp-brand-text">
                 <div className="rp-brand-title">Ram Pottery Ltd</div>
@@ -382,313 +424,322 @@ export default function CreditNoteNewClient() {
           </div>
         </aside>
 
-        {/* main */}
+        {/* Main */}
         <main className="rp-main">
-          {/* top header */}
-          <div className="rp-top rp-card-anim" style={{ animationDelay: "60ms" }}>
-            <div className="rp-title">
-              <div className="rp-eyebrow">
-                <span className="rp-tag">RamPotteryDoc style</span>
-                <span className="rp-tag">VAT 15%</span>
+          {/* Premium top header like invoices */}
+          <header className="rp-top rp-top--saas rp-card-anim" style={{ animationDelay: "60ms" }}>
+            <div className="rp-top-left--actions">
+              <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={toggleTheme}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                {dark ? "☀ Light" : "🌙 Dark"}
+              </button>
+
+              <button type="button" className="rp-ui-btn" onClick={() => router.push("/credit-notes")}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                Back
+              </button>
+            </div>
+
+            <div className="rp-top-center--logo">
+              <div className="rp-top-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} priority />
               </div>
-              <h1>New Credit Note</h1>
-              <p>Premium template layout • ready for printing</p>
             </div>
 
-            <div className="rp-top-right">
-              <button type="button" className="rp-theme-btn" onClick={() => router.push("/credit-notes")}>
-                ← Back
-              </button>
-              <button type="button" className="rp-theme-btn" onClick={() => window.print()}>
-                🖨 Print
-              </button>
-              <button type="button" className="rp-theme-btn" onClick={toggleTheme}>
-                {dark ? "☀️ Light" : "🌙 Dark"}
-              </button>
+            <div className="rp-top-right--sync">
+              <div className="rp-sync">
+                <div className="rp-sync-label">Last sync :</div>
+                <div className="rp-sync-time">{lastSync}</div>
+              </div>
             </div>
-          </div>
+          </header>
 
-          {/* DOCUMENT PANEL */}
-          <section className="rp-card rp-glass rp-card-anim" style={{ animationDelay: "140ms" }}>
+          <section className="rp-exec rp-card-anim">
+            <div className="rp-exec__left">
+              <div className="rp-exec__title">New Credit Note</div>
+              <div className="rp-exec__sub">Auto-fill customer • product • prices • VAT 15%</div>
+            </div>
+            <div className="rp-exec__right">
+              <span className={`rp-live ${saving ? "is-dim" : ""}`}>
+                <span className="rp-live-dot" aria-hidden="true" />
+                {saving ? "Saving" : "Live"}
+              </span>
+              <span className="rp-chip rp-chip--soft">Reprint-ready</span>
+            </div>
+          </section>
+
+          {/* Document Card */}
+          <section className="rp-card rp-card-anim" style={{ animationDelay: "140ms" }}>
             <div className="rp-card-body" style={{ padding: 16 }}>
-              {/* “Paper” area */}
               <div
                 style={{
-                  background: paperBg,
-                  color: ink,
+                  background: "#fff",
                   borderRadius: 18,
-                  border: `1px solid rgba(148,163,184,.35)`,
+                  border: "1px solid rgba(148,163,184,.35)",
                   boxShadow: "0 25px 80px rgba(0,0,0,.10)",
                   overflow: "hidden",
                 }}
               >
-                {/* Header */}
-                <div style={{ padding: "16px 16px 10px 16px", borderBottom: `1px solid rgba(148,163,184,.25)` }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 14, alignItems: "center" }}>
+                {/* Paper header */}
+                <div style={{ padding: 16, borderBottom: "1px solid rgba(148,163,184,.22)" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 14, alignItems: "center" }}>
                     <div style={{ display: "flex", justifyContent: "center" }}>
-                      <Image
-                        src="/images/logo/logo.png"
-                        alt="Ram Pottery"
-                        width={110}
-                        height={110}
-                        priority
-                        style={{ width: 110, height: 110, objectFit: "contain" }}
-                      />
+                      <Image src="/images/logo/logo.png" alt="Ram Pottery" width={96} height={96} priority />
                     </div>
 
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 34, fontWeight: 1000, letterSpacing: ".06em", color: red }}>
+                      <div style={{ fontSize: 32, fontWeight: 1000, letterSpacing: ".06em", color: red }}>
                         {COMPANY.name}
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>{COMPANY.tagline1}</div>
-                      <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>{COMPANY.tagline2}</div>
+                      <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.82 }}>{COMPANY.tagline1}</div>
+                      <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.82 }}>{COMPANY.tagline2}</div>
 
-                      <div style={{ marginTop: 8, fontSize: 13, fontWeight: 850 }}>
-                        {COMPANY.address}
-                      </div>
-
+                      <div style={{ marginTop: 8, fontSize: 13, fontWeight: 850 }}>{COMPANY.address}</div>
                       <div style={{ marginTop: 6, fontSize: 12, fontWeight: 850 }}>
-                        <span style={{ color: red, fontWeight: 1000 }}>Tel:</span>{" "}
-                        {COMPANY.tel1} • {COMPANY.tel2} • {COMPANY.tel3}
+                        <span style={{ color: red, fontWeight: 1000 }}>Tel:</span> {COMPANY.tel1} • {COMPANY.tel2} • {COMPANY.tel3}
                       </div>
                       <div style={{ marginTop: 4, fontSize: 12, fontWeight: 850 }}>
                         <span style={{ color: red, fontWeight: 1000 }}>Email:</span> {COMPANY.email} •{" "}
                         <span style={{ color: red, fontWeight: 1000 }}>Web:</span> {COMPANY.web}
                       </div>
 
-                      <div style={{ marginTop: 10, fontSize: 14, fontWeight: 1000, color: red, letterSpacing: ".12em" }}>
+                      <div style={{ marginTop: 10, fontSize: 14, fontWeight: 1000, color: red, letterSpacing: ".14em" }}>
                         CREDIT NOTE
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Customer + Meta boxes */}
+                {/* Form grid */}
                 <div style={{ padding: 16 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                    {/* Customer details */}
-                    <div style={box}>
-                      <div style={boxHead}>Customer Details</div>
-                      <div style={{ padding: 12, display: "grid", gap: 10 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Customer *</div>
-                          <select style={selectStyle} value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-                            <option value="">Select customer</option>
-                            {customers.map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.customer_code ? `${c.customer_code} — ` : ""}
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
+                    {/* Customer */}
+                    <div className="rp-card" style={{ margin: 0 }}>
+                      <div className="rp-card-head rp-card-head--tight">
+                        <div>
+                          <div className="rp-card-title">Customer</div>
+                          <div className="rp-card-sub">Auto-fill from customer list</div>
                         </div>
+                        <span className="rp-chip rp-chip--soft">{loadingLists ? "Loading…" : "Ready"}</span>
+                      </div>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Customer Code</div>
-                          <div style={{ fontWeight: 950 }}>
-                            {selectedCustomer?.customer_code || "—"}
+                      <div className="rp-card-body" style={{ paddingTop: 10 }}>
+                        <div style={{ display: "grid", gap: 10 }}>
+                          <label>
+                            <div className={labelCls}>Customer *</div>
+                            <select
+                              ref={customerRef}
+                              className={inputCls}
+                              value={customerId}
+                              onChange={(e) => setCustomerId(e.target.value)}
+                            >
+                              <option value="">Select customer</option>
+                              {customers.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.customer_code ? `${c.customer_code} — ` : ""}
+                                  {c.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            <div>
+                              <div className={labelCls}>Customer Code</div>
+                              <div style={{ fontWeight: 1000, paddingTop: 6 }}>{selectedCustomer?.customer_code || "—"}</div>
+                            </div>
+                            <div>
+                              <div className={labelCls}>Name</div>
+                              <div style={{ fontWeight: 1000, paddingTop: 6 }}>{selectedCustomer?.name || "—"}</div>
+                            </div>
                           </div>
-                        </div>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Name</div>
-                          <div style={{ fontWeight: 950 }}>{selectedCustomer?.name || "—"}</div>
-                        </div>
-
-                        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Reason</div>
-                          <input
-                            style={smallInput}
-                            value={reason}
-                            onChange={(e) => setReason(e.target.value)}
-                            placeholder="Returned goods / Damaged / Price adjustment…"
-                          />
+                          <label>
+                            <div className={labelCls}>Reason</div>
+                            <input
+                              ref={reasonRef}
+                              className={inputCls}
+                              value={reason}
+                              onChange={(e) => setReason(e.target.value)}
+                              placeholder="Returned goods / Damaged / Price adjustment…"
+                            />
+                          </label>
                         </div>
                       </div>
                     </div>
 
                     {/* Meta */}
-                    <div style={box}>
-                      <div style={{ ...boxHead, display: "flex", justifyContent: "space-between", gap: 10 }}>
-                        <span>BRN: {COMPANY.brn}</span>
-                        <span>{COMPANY.vat}</span>
+                    <div className="rp-card" style={{ margin: 0 }}>
+                      <div className="rp-card-head rp-card-head--tight">
+                        <div>
+                          <div className="rp-card-title">Document</div>
+                          <div className="rp-card-sub">BRN • VAT • reference</div>
+                        </div>
+                        <span className="rp-chip">VAT 15%</span>
                       </div>
 
-                      <div style={{ padding: 12, display: "grid", gap: 10 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Credit Note No</div>
-                          <div style={{ fontWeight: 1000, letterSpacing: ".04em" }}>AUTO</div>
-                        </div>
+                      <div className="rp-card-body" style={{ paddingTop: 10 }}>
+                        <div style={{ display: "grid", gap: 10 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            <div>
+                              <div className={labelCls}>Date *</div>
+                              <input type="date" className={inputCls} value={creditNoteDate} onChange={(e) => setCreditNoteDate(e.target.value)} />
+                            </div>
+                            <div>
+                              <div className={labelCls}>Credit Note No</div>
+                              <div style={{ fontWeight: 1000, paddingTop: 10 }}>AUTO</div>
+                            </div>
+                          </div>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Date *</div>
-                          <input
-                            type="date"
-                            style={smallInput}
-                            value={creditNoteDate}
-                            onChange={(e) => setCreditNoteDate(e.target.value)}
-                          />
-                        </div>
+                          <label>
+                            <div className={labelCls}>Related Invoice ID (optional)</div>
+                            <input className={inputCls} value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} placeholder="e.g. 123" />
+                          </label>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Related Invoice ID</div>
-                          <input
-                            style={smallInput}
-                            value={invoiceId}
-                            onChange={(e) => setInvoiceId(e.target.value)}
-                            placeholder="e.g. 123"
-                          />
-                        </div>
-
-                        <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
-                          <div style={cellLabel}>Sales Rep</div>
-                          <input style={smallInput} value={"—"} readOnly />
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            <span className="rp-chip rp-chip--soft">BRN: {COMPANY.brn}</span>
+                            <span className="rp-chip rp-chip--soft">{COMPANY.vat}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Items table */}
-                  <div style={{ marginTop: 14, ...box }}>
-                    <div style={boxHead}>Items</div>
-
-                    <div style={{ padding: 12 }}>
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
-                          <thead>
-                            <tr>
-                              {[
-                                "SN",
-                                "ITEM CODE",
-                                "DESCRIPTION",
-                                "TOTAL QTY",
-                                "UNIT PRICE (Excl VAT)",
-                                "VAT",
-                                "UNIT PRICE (Incl VAT)",
-                                "TOTAL AMOUNT (Incl VAT)",
-                                "",
-                              ].map((h, idx) => (
-                                <th
-                                  key={idx}
-                                  style={{
-                                    background: red,
-                                    color: "white",
-                                    fontSize: 12,
-                                    letterSpacing: ".06em",
-                                    textTransform: "uppercase",
-                                    padding: "10px 10px",
-                                    borderRight: idx === 8 ? "none" : "1px solid rgba(255,255,255,.18)",
-                                    whiteSpace: "nowrap",
-                                    textAlign: idx >= 3 ? "right" : "left",
-                                  }}
-                                >
-                                  {h}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-
-                          <tbody>
-                            {items.map((r, i) => (
-                              <tr key={r.id}>
-                                {/* SN */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, fontWeight: 950 }}>
-                                  {i + 1}
-                                </td>
-
-                                {/* ITEM CODE + PRODUCT SELECT */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, minWidth: 240 }}>
-                                  <select
-                                    style={selectStyle}
-                                    value={r.productId}
-                                    onChange={(e) => handleSelectProduct(r.id, e.target.value)}
-                                  >
-                                    <option value="">Select product</option>
-                                    {products.map((p) => (
-                                      <option key={p.id} value={p.id}>
-                                        {p.sku} — {p.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 900, opacity: 0.85 }}>
-                                    {r.sku || "—"}
-                                  </div>
-                                </td>
-
-                                {/* DESCRIPTION */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, minWidth: 260, fontWeight: 850 }}>
-                                  {r.description || "—"}
-                                </td>
-
-                                {/* QTY */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, minWidth: 120 }}>
-                                  <input
-                                    style={{ ...smallInput, textAlign: "right" }}
-                                    inputMode="numeric"
-                                    value={r.qty}
-                                    onChange={(e) => updateItem(r.id, { qty: Number(e.target.value) || 0 })}
-                                  />
-                                </td>
-
-                                {/* UNIT EXCL */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, minWidth: 170 }}>
-                                  <input
-                                    style={{ ...smallInput, textAlign: "right" }}
-                                    inputMode="decimal"
-                                    value={r.unitExcl}
-                                    onChange={(e) => updateItem(r.id, { unitExcl: Number(e.target.value) || 0 })}
-                                  />
-                                </td>
-
-                                {/* VAT */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, textAlign: "right", fontWeight: 950 }}>
-                                  {r.unitVat.toFixed(2)}
-                                </td>
-
-                                {/* UNIT INCL */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, textAlign: "right", fontWeight: 950 }}>
-                                  {r.unitIncl.toFixed(2)}
-                                </td>
-
-                                {/* LINE TOTAL */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, textAlign: "right", fontWeight: 1000 }}>
-                                  {r.lineTotal.toFixed(2)}
-                                </td>
-
-                                {/* Remove */}
-                                <td style={{ padding: 10, borderBottom: `1px solid rgba(148,163,184,.25)`, textAlign: "right" }}>
-                                  {items.length > 1 && (
-                                    <button
-                                      type="button"
-                                      className="rp-chip"
-                                      onClick={() => removeRow(r.id)}
-                                      style={{ border: `1px solid rgba(227,6,19,.25)` }}
-                                    >
-                                      Remove
-                                    </button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                  {/* Items */}
+                  <div className="rp-card" style={{ marginTop: 14 }}>
+                    <div className="rp-card-head rp-card-head--tight">
+                      <div>
+                        <div className="rp-card-title">Items</div>
+                        <div className="rp-card-sub">Select product → SKU/Name/Price auto-filled</div>
                       </div>
 
-                      <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 12, flexWrap: "wrap" }}>
-                        <button type="button" className="rp-chip rp-chip--primary" onClick={addRow}>
-                          + Add Row
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <button type="button" className="rp-ui-btn" onClick={addRow}>
+                          <span className="rp-ui-btn__dot" aria-hidden="true" />
+                          Add row
                         </button>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "220px 170px", gap: 10, alignItems: "stretch", marginLeft: "auto" }}>
-                          <div style={{ ...box, borderRadius: 14 }}>
-                            <div style={boxHead}>Totals</div>
-                            <div style={{ padding: 12, display: "grid", gap: 10 }}>
+                        <button
+                          type="button"
+                          className="rp-ui-btn rp-ui-btn--brand"
+                          onClick={() => void save()}
+                          disabled={saving}
+                          title="Ctrl/⌘ + Enter"
+                        >
+                          <span className="rp-ui-btn__dot" aria-hidden="true" />
+                          {saving ? "Saving…" : "Save Credit Note"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rp-card-body">
+                      <div className="rp-table-scroll">
+                        <div className="rp-table-scroll__inner">
+                          <table className="rp-table rp-table--premium">
+                            <thead>
+                              <tr>
+                                <th style={{ width: 70 }}>SN</th>
+                                <th style={{ minWidth: 280 }}>Product</th>
+                                <th style={{ minWidth: 260 }}>Description</th>
+                                <th className="rp-right" style={{ width: 120 }}>Qty</th>
+                                <th className="rp-right rp-col-hide-sm" style={{ width: 170 }}>Unit Excl</th>
+                                <th className="rp-right rp-col-hide-sm" style={{ width: 120 }}>VAT</th>
+                                <th className="rp-right rp-col-hide-sm" style={{ width: 170 }}>Unit Incl</th>
+                                <th className="rp-right" style={{ width: 170 }}>Line Total</th>
+                                <th style={{ width: 90 }} />
+                              </tr>
+                            </thead>
+
+                            <tbody>
+                              {items.map((r, i) => (
+                                <tr key={r.id} className="rp-row-hover">
+                                  <td className="rp-strong" style={{ textAlign: "center" }}>{i + 1}</td>
+
+                                  <td>
+                                    <select
+                                      className={inputCls}
+                                      value={r.productId}
+                                      onChange={(e) => handleSelectProduct(r.id, e.target.value)}
+                                    >
+                                      <option value="">Select product</option>
+                                      {products.map((p) => (
+                                        <option key={p.id} value={p.id}>
+                                          {p.sku} — {p.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <div className="rp-muted" style={{ marginTop: 6, fontWeight: 900 }}>
+                                      SKU: <b style={{ fontWeight: 1000 }}>{r.sku || "—"}</b>
+                                    </div>
+
+                                    {/* mobile price view */}
+                                    <div className="rp-only-sm" style={{ marginTop: 8 }}>
+                                      <div className="rp-mini-row">
+                                        <span>Unit</span>
+                                        <b>{money(r.unitExcl)}</b>
+                                      </div>
+                                      <div className="rp-mini-row">
+                                        <span>Line</span>
+                                        <b>{money(r.lineTotal)}</b>
+                                      </div>
+                                    </div>
+                                  </td>
+
+                                  <td style={{ fontWeight: 850 }}>{r.description || "—"}</td>
+
+                                  <td className="rp-right">
+                                    <input
+                                      className={inputCls}
+                                      style={{ textAlign: "right" } as any}
+                                      inputMode="numeric"
+                                      value={r.qty}
+                                      onChange={(e) => updateItem(r.id, { qty: Number(e.target.value) || 0 })}
+                                    />
+                                  </td>
+
+                                  <td className="rp-right rp-col-hide-sm">
+                                    <input
+                                      className={inputCls}
+                                      style={{ textAlign: "right" } as any}
+                                      inputMode="decimal"
+                                      value={r.unitExcl}
+                                      onChange={(e) => updateItem(r.id, { unitExcl: Number(e.target.value) || 0 })}
+                                    />
+                                  </td>
+
+                                  <td className="rp-right rp-col-hide-sm rp-strong">{money(r.unitVat)}</td>
+                                  <td className="rp-right rp-col-hide-sm rp-strong">{money(r.unitIncl)}</td>
+                                  <td className="rp-right rp-strong">{money(r.lineTotal)}</td>
+
+                                  <td style={{ textAlign: "right" }}>
+                                    {items.length > 1 && (
+                                      <button type="button" className="rp-chip" onClick={() => removeRow(r.id)}>
+                                        Remove
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Totals bar */}
+                      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 340px", gap: 12, alignItems: "start" }}>
+                        <div className="rp-muted" style={{ fontWeight: 900 }}>
+                          Tip: Select a product → price fills automatically. Ctrl/⌘+Enter to save.
+                        </div>
+
+                        <div className="rp-card" style={{ margin: 0 }}>
+                          <div className="rp-card-body">
+                            <div style={{ display: "grid", gap: 8 }}>
                               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 950 }}>
-                                <span>SUB TOTAL</span>
+                                <span>SUBTOTAL</span>
                                 <span>{money(totals.subtotal)}</span>
                               </div>
                               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 950 }}>
-                                <span>VAT 15%</span>
+                                <span>VAT (15%)</span>
                                 <span>{money(totals.vat)}</span>
                               </div>
                               <div style={{ height: 1, background: "rgba(148,163,184,.35)" }} />
@@ -696,46 +747,48 @@ export default function CreditNoteNewClient() {
                                 <span>TOTAL</span>
                                 <span>{money(totals.total)}</span>
                               </div>
+
+                              <button
+                                type="button"
+                                onClick={() => void save()}
+                                disabled={saving}
+                                style={{
+                                  marginTop: 8,
+                                  borderRadius: 14,
+                                  border: "none",
+                                  background: `linear-gradient(135deg, ${red}, #b4000b)`,
+                                  color: "white",
+                                  fontWeight: 1000,
+                                  letterSpacing: ".02em",
+                                  boxShadow: "0 18px 50px rgba(227,6,19,.25)",
+                                  padding: "12px 14px",
+                                  cursor: saving ? "not-allowed" : "pointer",
+                                  opacity: saving ? 0.75 : 1,
+                                }}
+                                title="Ctrl/⌘ + Enter"
+                              >
+                                {saving ? "Saving…" : "Save Credit Note"}
+                              </button>
                             </div>
                           </div>
-
-                          <button
-                            type="button"
-                            onClick={save}
-                            style={{
-                              borderRadius: 14,
-                              border: "none",
-                              background: `linear-gradient(135deg, ${red}, #b4000b)`,
-                              color: "white",
-                              fontWeight: 1000,
-                              letterSpacing: ".02em",
-                              boxShadow: "0 18px 50px rgba(227,6,19,.25)",
-                              padding: "14px 14px",
-                              cursor: "pointer",
-                              height: "100%",
-                            }}
-                          >
-                            Save Credit Note
-                          </button>
                         </div>
                       </div>
-                    </div>
-                  </div>
 
-                  {/* Footer note bar (like your template) */}
-                  <div
-                    style={{
-                      marginTop: 14,
-                      background: red,
-                      color: "white",
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      fontWeight: 900,
-                      textAlign: "center",
-                      letterSpacing: ".03em",
-                    }}
-                  >
-                    We thank you for your business and look forward to being of service to you again.
+                      <div
+                        style={{
+                          marginTop: 14,
+                          background: red,
+                          color: "white",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          fontWeight: 900,
+                          textAlign: "center",
+                          letterSpacing: ".03em",
+                        }}
+                      >
+                        We thank you for your business and look forward to being of service to you again.
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -743,7 +796,7 @@ export default function CreditNoteNewClient() {
           </section>
 
           <footer className="rp-footer rp-card-anim" style={{ animationDelay: "260ms" }}>
-            © 2025 Ram Pottery Ltd • Built by <span>MoBiz.mu</span>
+            © {new Date().getFullYear()} Ram Pottery Ltd • Built by <span>MoBiz.mu</span>
           </footer>
         </main>
       </div>

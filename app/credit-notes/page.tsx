@@ -3,7 +3,6 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { rpFetch } from "@/lib/rpFetch";
 
 type RpSession = {
@@ -112,7 +111,6 @@ function mapRow(r: any): CreditNoteRow {
 }
 
 export default function CreditNotesPage() {
-  const router = useRouter();
   const printRef = useRef<HTMLDivElement | null>(null);
 
   // UI shell
@@ -133,6 +131,9 @@ export default function CreditNotesPage() {
   const [filter, setFilter] = useState<FilterKey>("ALL");
   const [pulse, setPulse] = useState(false);
 
+  // ⋮ actions
+  const [openMenu, setOpenMenu] = useState<number | null>(null);
+
   useEffect(() => {
     setMounted(true);
 
@@ -147,6 +148,33 @@ export default function CreditNotesPage() {
     } catch {
       setSession(null);
     }
+  }, []);
+
+  // lock scroll when drawer open
+  useEffect(() => {
+    document.body.style.overflow = drawerOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [drawerOpen]);
+
+  // close ⋮ on outside click
+  useEffect(() => {
+    const close = () => setOpenMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, []);
+
+  // ESC closes drawer + ⋮
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setDrawerOpen(false);
+        setOpenMenu(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   function toggleTheme() {
@@ -166,14 +194,16 @@ export default function CreditNotesPage() {
   }
 
   const canSeeAdminNav = mounted && isAdmin(session?.role);
+
   const navItems = useMemo(() => {
     const base = [
       { href: "/", label: "Dashboard" },
       { href: "/invoices", label: "Invoices" },
       { href: "/credit-notes", label: "Credit Notes" },
-      { href: "/stock", label: "Stock & Categories" },
+      { href: "/products", label: "Stock & Categories" },
       { href: "/stock-movements", label: "Stock Movements" },
       { href: "/customers", label: "Customers" },
+      { href: "/suppliers", label: "Suppliers" },
       { href: "/reports", label: "Reports & Statements" },
     ];
     if (canSeeAdminNav) base.push({ href: "/admin/users", label: "Users & Permissions" });
@@ -215,7 +245,7 @@ export default function CreditNotesPage() {
   }
 
   useEffect(() => {
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -326,6 +356,54 @@ export default function CreditNotesPage() {
     { key: "VOID", label: "Void" },
   ];
 
+  const SideCard = (
+    <div
+      className="rp-side-card rp-card-anim"
+      style={{
+        minHeight: "calc(100vh - 28px)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div className="rp-brand">
+        <div className="rp-brand-logo">
+          <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
+        </div>
+        <div>
+          <div className="rp-brand-title">RampotteryHUB</div>
+          <div className="rp-brand-sub">Accounting & Stock System</div>
+        </div>
+      </div>
+
+      <nav className="rp-nav" style={{ flex: 1 }}>
+        {navItems.map((it) => (
+          <Link
+            key={it.href}
+            className={`rp-nav-btn ${it.href === "/credit-notes" ? "rp-nav-btn--active" : ""}`}
+            href={it.href}
+            onClick={() => setDrawerOpen(false)}
+          >
+            <span className="rp-ic3d" aria-hidden="true">
+              ▶
+            </span>
+            {it.label}
+          </Link>
+        ))}
+      </nav>
+
+      <div className="rp-side-footer rp-side-footer--in" style={{ marginTop: "auto" }}>
+        <div className="rp-role">
+          <span>Signed in</span>
+          <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+        </div>
+        <div className="rp-role" style={{ marginTop: 10 }}>
+          <span>Role</span>
+          <b>{mounted ? roleLabel : "—"}</b>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="rp-app">
       <div className="rp-bg" aria-hidden="true">
@@ -338,12 +416,7 @@ export default function CreditNotesPage() {
       <div className="rp-shell rp-enter">
         {/* Mobile top bar */}
         <div className="rp-mtop">
-          <button
-            type="button"
-            className="rp-icon-btn rp-burger"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open menu"
-          >
+          <button type="button" className="rp-icon-btn rp-burger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
             <span aria-hidden="true">
               <i />
               <i />
@@ -362,11 +435,7 @@ export default function CreditNotesPage() {
         </div>
 
         {/* Overlay + Drawer */}
-        <button
-          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
-          onClick={() => setDrawerOpen(false)}
-          aria-label="Close menu"
-        />
+        <button className={`rp-overlay ${drawerOpen ? "is-open" : ""}`} onClick={() => setDrawerOpen(false)} aria-label="Close menu" />
         <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -384,80 +453,15 @@ export default function CreditNotesPage() {
             </button>
           </div>
 
-          <div className="rp-drawer-body">
-            <nav className="rp-nav">
-              {navItems.map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/credit-notes" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                  onClick={() => setDrawerOpen(false)}
-                >
-                  <span className="rp-ic3d" aria-hidden="true">
-                    ▶
-                  </span>
-                  {it.label}
-                </Link>
-              ))}
-            </nav>
-
-            <div className="rp-side-footer rp-side-footer--in">
-              <div className="rp-role">
-                <span>Signed in</span>
-                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
-              </div>
-              <div className="rp-role" style={{ marginTop: 10 }}>
-                <span>Role</span>
-                <b>{mounted ? roleLabel : "—"}</b>
-              </div>
-            </div>
-          </div>
+          <div className="rp-drawer-body">{SideCard}</div>
         </aside>
 
         {/* Desktop sidebar */}
-        <aside className="rp-side">
-          <div className="rp-side-card rp-card-anim">
-            <div className="rp-brand">
-              <div className="rp-brand-logo">
-                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
-              </div>
-              <div>
-                <div className="rp-brand-title">RampotteryHUB</div>
-                <div className="rp-brand-sub">Accounting & Stock System</div>
-              </div>
-            </div>
-
-            <nav className="rp-nav">
-              {navItems.map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/credit-notes" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                >
-                  <span className="rp-ic3d" aria-hidden="true">
-                    ▶
-                  </span>
-                  {it.label}
-                </Link>
-              ))}
-            </nav>
-
-            <div className="rp-side-footer rp-side-footer--in">
-              <div className="rp-role">
-                <span>Signed in</span>
-                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
-              </div>
-              <div className="rp-role" style={{ marginTop: 10 }}>
-                <span>Role</span>
-                <b>{mounted ? roleLabel : "—"}</b>
-              </div>
-            </div>
-          </div>
-        </aside>
+        <aside className="rp-side">{SideCard}</aside>
 
         {/* Main */}
         <main className="rp-main">
-          {/* Top header (same as invoices/dashboard) */}
+          {/* Top header */}
           <header className="rp-top rp-top--saas rp-card-anim" style={{ animationDelay: "60ms" }}>
             <div className="rp-top-left--actions">
               <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={toggleTheme}>
@@ -576,6 +580,10 @@ export default function CreditNotesPage() {
                   value={qDraft}
                   onChange={(e) => setQDraft(e.target.value)}
                   placeholder="Search credit note no, customer, status…"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") applySearch();
+                    if (e.key === "Escape") clearAll();
+                  }}
                 />
 
                 <button
@@ -611,86 +619,142 @@ export default function CreditNotesPage() {
             </div>
           </section>
 
-          {/* Table */}
+          {/* ===== Pinned-table Register ===== */}
           <section className="rp-card rp-card-anim">
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Credit Note Register</div>
-                <div className="rp-card-sub">Click number to open printable document</div>
+                <div className="rp-card-sub">Mobile scroll • pinned first column • clean actions</div>
               </div>
               <span className="rp-soft-pill">
                 Showing <b>{filtered.length}</b>
               </span>
             </div>
 
-            <div className="rp-card-body rp-table-wrap" style={{ paddingTop: 0 }}>
-              <div ref={printRef}>
-                <table className="rp-table rp-table--premium">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 230 }}>Credit Note No</th>
-                      <th style={{ width: 140 }}>Date</th>
-                      <th>Customer</th>
-                      <th style={{ width: 160 }}>Code</th>
-                      <th className="rp-right" style={{ width: 170 }}>
-                        Total (Rs)
-                      </th>
-                      <th style={{ width: 180 }}>Status</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {filtered.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="rp-td-empty">
-                          {loading ? "Loading credit notes…" : "No credit notes found."}
-                        </td>
-                      </tr>
-                    ) : (
-                      filtered.map((r) => {
-                        const c = normalizeCustomer(r.customers);
-                        const badge = badgeForCredit(r.status);
-                        const isVoid = badge.key === "VOID";
-
-                        return (
-                          <tr key={r.id} className={isVoid ? "rp-row-locked" : ""}>
-                            <td className="rp-strong">
-                              {isVoid ? (
-                                <span
-                                  className="rp-row-link"
-                                  title="VOID credit notes are locked"
-                                  aria-disabled="true"
-                                  style={{ cursor: "not-allowed", opacity: 0.75 }}
-                                >
-                                  {r.credit_note_number || `#${r.id}`}
-                                </span>
-                              ) : (
-                                <Link className="rp-row-link" href={`/credit-notes/${r.id}`}>
-                                  {r.credit_note_number || `#${r.id}`}
-                                </Link>
-                              )}
-                            </td>
-
-                            <td>{fmtDate(r.credit_note_date)}</td>
-                            <td>
-                              <div className="rp-strong">{c?.name || "—"}</div>
-                            </td>
-                            <td>{c?.customer_code || "—"}</td>
-
-                            <td className="rp-right rp-strong" style={{ fontVariantNumeric: "tabular-nums" }}>
-                              {money(r.total_amount)}
-                            </td>
-
-                            <td>
-                              <span className={badge.cls}>{badge.label}</span>
-                              {isVoid ? <span style={{ marginLeft: 8, opacity: 0.75, fontWeight: 900 }}>🔒</span> : null}
-                            </td>
+            <div className="rp-card-body">
+              <div className="rp-table-wrap">
+                <div className="rp-table-scroll">
+                  <div className="rp-table-scroll__inner">
+                    {/* Keep printRef on the plain table container */}
+                    <div ref={printRef}>
+                      <table className="rp-table rp-table--premium">
+                        <thead>
+                          <tr>
+                            <th className="rp-pin" style={{ width: 230 }}>
+                              Credit Note No
+                            </th>
+                            <th style={{ width: 140 }}>Date</th>
+                            <th style={{ minWidth: 240 }}>Customer</th>
+                            <th style={{ width: 160 }}>Code</th>
+                            <th className="rp-right" style={{ width: 170 }}>
+                              Total (Rs)
+                            </th>
+                            <th style={{ width: 180 }}>Status</th>
+                            <th className="rp-pin-right" style={{ width: 64 }} />
                           </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
+                        </thead>
+
+                        <tbody>
+                          {filtered.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="rp-td-empty">
+                                {loading ? "Loading credit notes…" : "No credit notes found."}
+                              </td>
+                            </tr>
+                          ) : (
+                            filtered.map((r) => {
+                              const c = normalizeCustomer(r.customers);
+                              const badge = badgeForCredit(r.status);
+                              const isVoid = badge.key === "VOID";
+                              const docNo = r.credit_note_number || `#${r.id}`;
+
+                              return (
+                                <tr key={r.id} className={`rp-row-hover ${isVoid ? "rp-row-locked" : ""}`}>
+                                  {/* ✅ pinned first column cell */}
+                                  <td className="rp-pin rp-strong">
+                                    {isVoid ? (
+                                      <span
+                                        className="rp-row-link"
+                                        title="VOID credit notes are locked"
+                                        aria-disabled="true"
+                                        style={{ cursor: "not-allowed", opacity: 0.75 }}
+                                      >
+                                        {docNo}
+                                      </span>
+                                    ) : (
+                                      <Link className="rp-row-link" href={`/credit-notes/${r.id}`}>
+                                        {docNo}
+                                      </Link>
+                                    )}
+                                  </td>
+
+                                  <td>{fmtDate(r.credit_note_date)}</td>
+
+                                  <td>
+                                    <div className="rp-strong">{c?.name || "—"}</div>
+                                  </td>
+
+                                  <td>{c?.customer_code || "—"}</td>
+
+                                  <td className="rp-right rp-strong" style={{ fontVariantNumeric: "tabular-nums" }}>
+                                    {money(r.total_amount)}
+                                  </td>
+
+                                  <td>
+                                    <span className={badge.cls}>{badge.label}</span>
+                                    {isVoid ? <span style={{ marginLeft: 8, opacity: 0.75, fontWeight: 900 }}>🔒</span> : null}
+                                  </td>
+
+                                  {/* ✅ pinned right ⋮ menu */}
+                                  <td className="rp-pin-right" style={{ textAlign: "right" }}>
+                                    <button
+                                      type="button"
+                                      className="rp-row-actions-btn"
+                                      aria-label="Credit note actions"
+                                      disabled={isVoid}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (isVoid) return;
+                                        setOpenMenu(openMenu === r.id ? null : r.id);
+                                      }}
+                                      style={isVoid ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                                    >
+                                      ⋮
+                                    </button>
+
+                                    {openMenu === r.id && !isVoid && (
+                                      <div className="rp-row-actions-menu" onClick={(e) => e.stopPropagation()}>
+                                        <Link
+                                          href={`/credit-notes/${r.id}`}
+                                          onClick={() => setOpenMenu(null)}
+                                          className="rp-row-actions-link"
+                                        >
+                                          View / Print
+                                        </Link>
+
+                                        <div className="rp-row-actions-sep" />
+
+                                        <button
+                                          onClick={() => {
+                                            navigator.clipboard?.writeText(docNo).catch(() => {});
+                                            setOpenMenu(null);
+                                          }}
+                                        >
+                                          Copy Number
+                                        </button>
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* /printRef */}
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -698,45 +762,6 @@ export default function CreditNotesPage() {
           <footer className="rp-footer">© {new Date().getFullYear()} Ram Pottery Ltd • Built by Mobiz.mu</footer>
         </main>
       </div>
-
-      {/* Page-only micro styles (safe, premium) */}
-      <style jsx global>{`
-        .rp-filters-row {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-          flex-wrap: wrap;
-        }
-        .rp-ui-btn--pulse {
-          position: relative;
-        }
-        .rp-ui-btn--pulse::after {
-          content: "";
-          position: absolute;
-          inset: -2px;
-          border-radius: 16px;
-          border: 2px solid rgba(184, 0, 0, 0.22);
-          animation: rpPulse 1.15s ease-in-out infinite;
-          pointer-events: none;
-        }
-        @keyframes rpPulse {
-          0% {
-            opacity: 0.18;
-            transform: scale(1);
-          }
-          50% {
-            opacity: 0.34;
-            transform: scale(1.01);
-          }
-          100% {
-            opacity: 0.18;
-            transform: scale(1);
-          }
-        }
-        .rp-row-locked {
-          opacity: 0.62;
-        }
-      `}</style>
     </div>
   );
 }

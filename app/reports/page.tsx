@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import Image from "next/image";
+import { usePathname, useRouter } from "next/navigation";
 import { rpFetch } from "@/lib/rpFetch";
 
 type InvoiceRow = {
@@ -25,6 +26,13 @@ type CreditNoteRow = {
   customers?: any;
 };
 
+type RpSession = {
+  id?: string;
+  username?: string;
+  name?: string;
+  role?: string;
+};
+
 function n2(v: any) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
@@ -37,7 +45,6 @@ function formatRs(n: number) {
 
 function fmtDateKey(s?: string | null) {
   if (!s) return "";
-  // if timestamp, keep YYYY-MM-DD
   const t = String(s);
   if (t.length >= 10) return t.slice(0, 10);
   return t;
@@ -46,7 +53,6 @@ function fmtDateKey(s?: string | null) {
 function fmtDate(s?: string | null) {
   const key = fmtDateKey(s);
   if (!key) return "—";
-  // key = YYYY-MM-DD
   const [y, m, d] = key.split("-");
   if (!y || !m || !d) return key;
   return `${d}/${m}/${y}`;
@@ -82,9 +88,7 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
     return s;
   };
 
-  const csv = [headers.map(esc).join(",")]
-    .concat(rows.map((r) => r.map(esc).join(",")))
-    .join("\n");
+  const csv = [headers.map(esc).join(",")].concat(rows.map((r) => r.map(esc).join(","))).join("\n");
 
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -95,15 +99,29 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   URL.revokeObjectURL(url);
 }
 
+function roleUpper(r?: string) {
+  return String(r || "").toUpperCase();
+}
+function isAdmin(r?: string) {
+  return roleUpper(r) === "ADMIN";
+}
+
 export default function ReportsPage() {
   const pathname = usePathname();
+  const router = useRouter();
 
   // ✅ hydration lock (must be AFTER hooks are declared)
   const [mounted, setMounted] = useState(false);
 
+  // Shell UI
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [lastSync, setLastSync] = useState("—");
+  const [session, setSession] = useState<RpSession | null>(null);
+
+  // Data state
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [lastSync, setLastSync] = useState("—");
 
   const [invoicesAll, setInvoicesAll] = useState<InvoiceRow[]>([]);
   const [creditNotesAll, setCreditNotesAll] = useState<CreditNoteRow[]>([]);
@@ -117,6 +135,45 @@ export default function ReportsPage() {
 
   useEffect(() => setMounted(true), []);
 
+  useEffect(() => {
+    // theme
+    const saved = localStorage.getItem("rp_theme");
+    const initial = saved === "dark" ? "dark" : "light";
+    setTheme(initial);
+    document.documentElement.dataset.theme = initial;
+
+    // session
+    try {
+      const raw = localStorage.getItem("rp_user");
+      if (!raw) {
+        router.replace("/login");
+        return;
+      }
+      const s = JSON.parse(raw);
+      setSession(s);
+    } catch {
+      router.replace("/login");
+      return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("rp_theme", next);
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      localStorage.removeItem("rp_user");
+      window.location.href = "/login";
+    }
+  }
+
   async function load() {
     setLoading(true);
     setErr(null);
@@ -126,10 +183,8 @@ export default function ReportsPage() {
       const invJson: any = await rpJson("/api/invoices/list", { cache: "no-store" });
       const cnJson: any = await rpJson("/api/credit-notes", { cache: "no-store" });
 
-      const invList =
-        invJson?.invoices ?? invJson?.data ?? invJson?.rows ?? invJson?.items ?? [];
-      const cnList =
-        cnJson?.creditNotes ?? cnJson?.data ?? cnJson?.rows ?? cnJson?.items ?? [];
+      const invList = invJson?.invoices ?? invJson?.data ?? invJson?.rows ?? invJson?.items ?? [];
+      const cnList = cnJson?.creditNotes ?? cnJson?.data ?? cnJson?.rows ?? cnJson?.items ?? [];
 
       setInvoicesAll(Array.isArray(invList) ? invList : []);
       setCreditNotesAll(Array.isArray(cnList) ? cnList : []);
@@ -228,11 +283,33 @@ export default function ReportsPage() {
     downloadCsv(`reports_credit_notes_${from}_to_${to}.csv`, headers, rows);
   }
 
+  const userLabel = useMemo(() => {
+    const name = (session?.name || session?.username || "").trim();
+    return name ? name : "User";
+  }, [session]);
+
+  const roleLabel = useMemo(() => roleUpper(session?.role) || "STAFF", [session]);
+  const canSeeAdminNav = mounted && isAdmin(session?.role);
+
+  const navItems = useMemo(() => {
+    const base = [
+      { href: "/", label: "Dashboard" },
+      { href: "/invoices", label: "Invoices" },
+      { href: "/credit-notes", label: "Credit Notes" },
+      { href: "/stock", label: "Stock & Categories" },
+      { href: "/stock-movements", label: "Stock Movements" },
+      { href: "/customers", label: "Customers" },
+      { href: "/reports", label: "Reports & Statements" },
+    ];
+    if (canSeeAdminNav) base.push({ href: "/admin/users", label: "Users & Permissions" });
+    return base;
+  }, [canSeeAdminNav]);
+
   // ✅ hydration lock AFTER hooks
   if (!mounted) return null;
 
   return (
-    <div className="rp-app rp-enter">
+    <div className="rp-app">
       <div className="rp-bg" aria-hidden="true">
         <div className="rp-bg-orb rp-bg-orb--1" />
         <div className="rp-bg-orb rp-bg-orb--2" />
@@ -240,84 +317,148 @@ export default function ReportsPage() {
         <div className="rp-bg-grid" />
       </div>
 
-      <div className="rp-shell">
-        {/* Sidebar (same premium style) */}
-        <aside className="rp-side rp-side--desktop">
-          <div className="rp-side-card rp-card-anim">
-            <div className="rp-brand">
-              <div className="rp-brand-logo rp-brand-logo--white">
-                <img
-                  src="/images/logo/logo.png"
-                  alt="Ram Pottery"
-                  width={40}
-                  height={40}
-                  style={{ display: "block", objectFit: "contain" }}
-                />
+      <div className="rp-shell rp-enter">
+        {/* Mobile top bar */}
+        <div className="rp-mtop">
+          <button
+            type="button"
+            className="rp-icon-btn rp-burger"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open menu"
+          >
+            <span aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          </button>
+
+          <div className="rp-mtop-brand">
+            <div className="rp-mtop-title">RampotteryHUB</div>
+            <div className="rp-mtop-sub">Reports</div>
+          </div>
+
+          <button type="button" className="rp-icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
+            {theme === "dark" ? "☀" : "🌙"}
+          </button>
+        </div>
+
+        {/* Overlay + Drawer */}
+        <button
+          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
+          onClick={() => setDrawerOpen(false)}
+          aria-label="Close menu"
+        />
+        <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
+          <div className="rp-drawer-head">
+            <div className="rp-drawer-brand">
+              <div className="rp-drawer-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={28} height={28} priority />
               </div>
               <div>
-                <div className="rp-brand-title">RamPotteryHUB</div>
-                <div className="rp-brand-sub">Accounting • Stock • Invoicing</div>
+                <div className="rp-drawer-title">RampotteryHUB</div>
+                <div className="rp-drawer-sub">Accounting & Stock System</div>
               </div>
             </div>
 
+            <button type="button" className="rp-icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close">
+              ✕
+            </button>
+          </div>
+
+          <div className="rp-drawer-body">
             <nav className="rp-nav">
-              <Link className={`rp-nav-btn ${pathname === "/" ? "rp-nav-btn--active" : ""}`} href="/" prefetch={false}>
-                Dashboard
-              </Link>
-              <Link className={`rp-nav-btn ${pathname?.startsWith("/invoices") ? "rp-nav-btn--active" : ""}`} href="/invoices" prefetch={false}>
-                Invoices
-              </Link>
-              <Link className={`rp-nav-btn ${pathname?.startsWith("/credit-notes") ? "rp-nav-btn--active" : ""}`} href="/credit-notes" prefetch={false}>
-                Credit Notes
-              </Link>
-              <Link className={`rp-nav-btn ${pathname?.startsWith("/customers") ? "rp-nav-btn--active" : ""}`} href="/customers" prefetch={false}>
-                Customers
-              </Link>
-              <Link className={`rp-nav-btn ${pathname?.startsWith("/products") ? "rp-nav-btn--active" : ""}`} href="/products" prefetch={false}>
-                Products
-              </Link>
-              <Link className={`rp-nav-btn ${pathname?.startsWith("/reports") ? "rp-nav-btn--active" : ""}`} href="/reports" prefetch={false}>
-                Reports & Statements
-              </Link>
+              {navItems.map((it) => (
+                <Link
+                  key={it.href}
+                  className={`rp-nav-btn ${it.href === "/reports" ? "rp-nav-btn--active" : ""}`}
+                  href={it.href}
+                  onClick={() => setDrawerOpen(false)}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">
+                    ▶
+                  </span>
+                  {it.label}
+                </Link>
+              ))}
             </nav>
 
-            <div className="rp-side-footer">
+            <div className="rp-side-footer rp-side-footer--in">
               <div className="rp-role">
-                <span>Module</span>
-                <b>REPORTS</b>
+                <span>Signed in</span>
+                <b title={userLabel}>{userLabel}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{roleLabel}</b>
               </div>
             </div>
           </div>
         </aside>
 
+        {/* Desktop sidebar */}
+        <aside className="rp-side">
+          <div className="rp-side-card rp-card-anim">
+            <div className="rp-brand">
+              <div className="rp-brand-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
+              </div>
+              <div>
+                <div className="rp-brand-title">RampotteryHUB</div>
+                <div className="rp-brand-sub">Accounting & Stock System</div>
+              </div>
+            </div>
+
+            <nav className="rp-nav">
+              {navItems.map((it) => (
+                <Link
+                  key={it.href}
+                  className={`rp-nav-btn ${it.href === "/reports" ? "rp-nav-btn--active" : ""}`}
+                  href={it.href}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">
+                    ▶
+                  </span>
+                  {it.label}
+                </Link>
+              ))}
+            </nav>
+
+            <div className="rp-side-footer rp-side-footer--in">
+              <div className="rp-role">
+                <span>Signed in</span>
+                <b title={userLabel}>{userLabel}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{roleLabel}</b>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        {/* Main */}
         <main className="rp-main">
-          {/* Header */}
+          {/* Top bar */}
           <header className="rp-top rp-top--saas rp-card-anim" style={{ animationDelay: "60ms" }}>
-            {/* left */}
             <div className="rp-top-left--actions">
-              <Link className="rp-ui-btn rp-ui-btn--soft rp-glow" href="/" prefetch={false}>
-                ● Dashboard
-              </Link>
-              <span className="rp-top-pill">Reports</span>
+              <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={toggleTheme}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                {theme === "dark" ? "☀ Light" : "🌙 Dark"}
+              </button>
+
+              <button type="button" className="rp-ui-btn rp-ui-btn--danger" onClick={handleLogout}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                Log Out
+              </button>
             </div>
 
-            {/* center */}
-            <div className="rp-top-center--stacked">
-              <div className="rp-top-logo rp-top-logo--xl">
-                <img src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} />
-              </div>
-
-              <div className="rp-top-center-text">
-                <div className="rp-top-title">Reports & Statements</div>
-                <div className="rp-top-subtitle">Period totals • exports • credit notes (VOID excluded)</div>
-              </div>
-
-              <div className="rp-breadcrumb">
-                <span>Dashboard</span> → <b>Reports</b>
+            <div className="rp-top-center--logo">
+              <div className="rp-top-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} priority />
               </div>
             </div>
 
-            {/* right */}
             <div className="rp-top-right--sync">
               <div className="rp-sync">
                 <div className="rp-sync-label">Last sync :</div>
@@ -326,91 +467,126 @@ export default function ReportsPage() {
             </div>
           </header>
 
-          {/* Date Range Card */}
-          <section className="rp-panel rp-card-anim" style={{ animationDelay: "120ms" }}>
-            <div className="rp-panel-head">
+          {/* Executive header */}
+          <section className="rp-exec rp-card-anim">
+            <div className="rp-exec__left">
+              <div className="rp-exec__title">Reports & Statements</div>
+              <div className="rp-exec__sub">Period totals • exports • credit notes (VOID excluded)</div>
+            </div>
+            <div className="rp-exec__right">
+              <span className={`rp-live ${loading ? "is-dim" : ""}`}>
+                <span className="rp-live-dot" aria-hidden="true" />
+                {loading ? "Syncing" : "Live"}
+              </span>
+              <span className={`rp-chip rp-chip--soft ${err ? "rp-chip--warn" : ""}`}>
+                {err ? "Attention needed" : "All systems normal"}
+              </span>
+            </div>
+          </section>
+
+          {/* KPI row (premium) */}
+          <section className="rp-kpi-pro rp-card-anim">
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Invoice Total</div>
+              <div className="rp-kpi-pro__value">{formatRs(totals.invTotal)}</div>
+              <div className="rp-kpi-pro__sub">{totals.invCount} invoice(s)</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Paid</div>
+              <div className="rp-kpi-pro__value">{formatRs(totals.invPaid)}</div>
+              <div className="rp-kpi-pro__sub">Collected</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Outstanding</div>
+              <div className="rp-kpi-pro__value">{formatRs(totals.invDue)}</div>
+              <div className="rp-kpi-pro__sub">Balance remaining</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Credit Notes</div>
+              <div className="rp-kpi-pro__value">{formatRs(totals.cnTotal)}</div>
+              <div className="rp-kpi-pro__sub">{totals.cnCount} active</div>
+            </div>
+          </section>
+
+          {/* Period controls */}
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
               <div>
-                <div className="rp-panel-title">Date Range</div>
-                <div className="rp-panel-sub">Adjust period and refresh</div>
+                <div className="rp-card-title">Date Range</div>
+                <div className="rp-card-sub">Adjust the period and refresh totals</div>
               </div>
-              <div className="rp-panel-badge">{loading ? "Syncing…" : "Ready"}</div>
+              <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
 
-            <div className="rp-panel-body">
-              <div className="rp-report-range">
-                <label className="rp-field">
+            <div className="rp-card-body">
+              <div
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  alignItems: "end",
+                }}
+              >
+                <label className="rp-field" style={{ minWidth: 220 }}>
                   <span className="rp-label">From</span>
                   <input className="rp-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
                 </label>
 
-                <label className="rp-field">
+                <label className="rp-field" style={{ minWidth: 220 }}>
                   <span className="rp-label">To</span>
                   <input className="rp-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
                 </label>
 
-                <button className="rp-ui-btn rp-ui-btn--danger rp-glow" type="button" onClick={load} disabled={loading}>
-                  {loading ? "Loading…" : "Refresh"}
-                </button>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button className="rp-ui-btn rp-ui-btn--danger" type="button" onClick={load} disabled={loading}>
+                    <span className="rp-ui-btn__dot" aria-hidden="true" />
+                    {loading ? "Loading…" : "Refresh"}
+                  </button>
 
-                <div className="rp-report-note">
-                  Showing <b>{totals.invCount}</b> invoices • <b>{totals.cnCount}</b> credit notes
+                  <Link className="rp-ui-btn rp-ui-btn--brand" href="/invoices" prefetch={false}>
+                    <span className="rp-ui-btn__dot" aria-hidden="true" />
+                    View Invoices
+                  </Link>
+                </div>
+
+                <div className="rp-muted" style={{ fontWeight: 900 }}>
+                  Showing <b>{totals.invCount}</b> invoices • <b>{totals.cnCount}</b> credit notes •{" "}
+                  <b>{totals.voidCount}</b> VOID excluded
                 </div>
               </div>
 
-              {err ? <div className="rp-error-line" style={{ marginTop: 10 }}>{err}</div> : null}
-            </div>
-          </section>
-
-          {/* KPI Bar (red premium like dashboard) */}
-          <section className="rp-stats rp-stats--reports rp-card-anim" style={{ animationDelay: "160ms" }}>
-            <div className="rp-stat">
-              <div className="rp-stat-k">Invoice Total</div>
-              <div className="rp-stat-v">{formatRs(totals.invTotal)}</div>
-              <div className="rp-stat-s">Sum of totals</div>
-            </div>
-
-            <div className="rp-stat">
-              <div className="rp-stat-k">Paid</div>
-              <div className="rp-stat-v">{formatRs(totals.invPaid)}</div>
-              <div className="rp-stat-s">Collected</div>
-            </div>
-
-            <div className="rp-stat">
-              <div className="rp-stat-k">Outstanding</div>
-              <div className="rp-stat-v">{formatRs(totals.invDue)}</div>
-              <div className="rp-stat-s">Balance remaining</div>
-            </div>
-
-            <div className="rp-stat">
-              <div className="rp-stat-k">Credit Notes</div>
-              <div className="rp-stat-v">{formatRs(totals.cnTotal)}</div>
-              <div className="rp-stat-s">VOID excluded</div>
-            </div>
-
-            <div className="rp-stat rp-stat--dark">
-              <div className="rp-stat-k">VOID Notes</div>
-              <div className="rp-stat-v">{totals.voidCount}</div>
-              <div className="rp-stat-s">Excluded • {formatRs(totals.voidTotal)}</div>
+              {err ? (
+                <div className="rp-note rp-note--warn" style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>
+                  {err}
+                </div>
+              ) : null}
             </div>
           </section>
 
           {/* Exports */}
-          <section className="rp-panel rp-card-anim" style={{ animationDelay: "210ms" }}>
-            <div className="rp-panel-head">
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
               <div>
-                <div className="rp-panel-title">Exports</div>
-                <div className="rp-panel-sub">Download CSV for accounting / audits</div>
+                <div className="rp-card-title">Exports</div>
+                <div className="rp-card-sub">Download CSV for accounting / audits</div>
               </div>
-              <div className="rp-panel-badge">CSV</div>
+              <span className="rp-chip">CSV</span>
             </div>
 
-            <div className="rp-panel-body">
-              <div className="rp-report-actions">
-                <button className="rp-ui-btn rp-ui-btn--soft rp-glow" type="button" onClick={exportInvoicesCsv}>
-                  ⬇ Export Invoices CSV
+            <div className="rp-card-body">
+              <div className="rp-seg rp-seg--pro" style={{ justifyContent: "flex-start" }}>
+                <button className="rp-seg-item rp-seg-item--brand" type="button" onClick={exportInvoicesCsv}>
+                  <span className="rp-icbtn" aria-hidden="true">
+                    ⬇
+                  </span>
+                  Export Invoices CSV
                 </button>
-                <button className="rp-ui-btn rp-ui-btn--soft rp-glow" type="button" onClick={exportCreditNotesCsv}>
-                  ⬇ Export Credit Notes CSV
+
+                <button className="rp-seg-item rp-seg-item--brand" type="button" onClick={exportCreditNotesCsv}>
+                  <span className="rp-icbtn" aria-hidden="true">
+                    ⬇
+                  </span>
+                  Export Credit Notes CSV
                 </button>
               </div>
 
@@ -420,9 +596,28 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          <footer className="rp-footer rp-card-anim" style={{ animationDelay: "300ms" }}>
-            © 2026 Ram Pottery Ltd • Built by <span>MoBiz.mu</span>
-          </footer>
+          {/* VOID summary (premium callout) */}
+          <section className="rp-card rp-card-anim" style={{ border: "1px solid rgba(255,107,107,.22)" }}>
+            <div className="rp-card-head rp-card-head--tight">
+              <div>
+                <div className="rp-card-title">VOID Credit Notes</div>
+                <div className="rp-card-sub">Excluded from totals (kept for audit trail)</div>
+              </div>
+              <span className="rp-chip rp-chip--warn">{totals.voidCount} VOID</span>
+            </div>
+            <div className="rp-card-body" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <span className="rp-status rp-status-pending">
+                <span className="rp-status-dot" />
+                Count: <b>{totals.voidCount}</b>
+              </span>
+              <span className="rp-status rp-status-cancelled">
+                <span className="rp-status-dot" />
+                Amount: <b>{formatRs(totals.voidTotal)}</b>
+              </span>
+            </div>
+          </section>
+
+          <footer className="rp-footer">© {new Date().getFullYear()} Ram Pottery Ltd • Built by Mobiz.mu</footer>
         </main>
       </div>
     </div>

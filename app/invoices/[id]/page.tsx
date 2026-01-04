@@ -55,7 +55,7 @@ export default function InvoiceDetailPage() {
       setLoading(true);
       setActionError(null);
 
-      const res = await rpFetch(`/api/invoices/${id}`, { cache: "no-store" });
+      const res = await rpFetch(`/api/invoices/get/${id}`, { cache: "no-store" });
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to load invoice");

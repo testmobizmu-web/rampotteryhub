@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { rpFetch } from "@/lib/rpFetch";
 
@@ -81,6 +81,7 @@ export default function InvoicesPage() {
   const [session, setSession] = useState<RpSession | null>(null);
 
   const [rows, setRows] = useState<any[]>([]);
+  const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"All" | "Issued" | "Paid" | "Partially Paid" | "Void">("All");
 
@@ -91,6 +92,8 @@ export default function InvoicesPage() {
   const [payInvoice, setPayInvoice] = useState<any | null>(null);
   const [payAmount, setPayAmount] = useState<number>(0);
   const [paySaving, setPaySaving] = useState(false);
+
+  const payInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -108,15 +111,45 @@ export default function InvoicesPage() {
     }
   }, []);
 
+  // lock scroll when drawer open
+  useEffect(() => {
+    document.body.style.overflow = drawerOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [drawerOpen]);
+
+  // close menu on outside click
+  useEffect(() => {
+    const close = () => setOpenMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, []);
+
+  // global ESC behavior
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpenMenu(null);
+        setDrawerOpen(false);
+        if (payOpen && !paySaving) setPayOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [payOpen, paySaving]);
+
   const canSeeAdminNav = mounted && isAdmin(session?.role);
+
   const navItems = useMemo(() => {
     const base = [
       { href: "/", label: "Dashboard" },
       { href: "/invoices", label: "Invoices" },
       { href: "/credit-notes", label: "Credit Notes" },
-      { href: "/stock", label: "Stock & Categories" },
+      { href: "/products", label: "Stock & Categories" },
       { href: "/stock-movements", label: "Stock Movements" },
       { href: "/customers", label: "Customers" },
+      { href: "/suppliers", label: "Suppliers" },
       { href: "/reports", label: "Reports & Statements" },
     ];
     if (canSeeAdminNav) base.push({ href: "/admin/users", label: "Users & Permissions" });
@@ -128,10 +161,7 @@ export default function InvoicesPage() {
     return name ? name : "User";
   }, [session]);
 
-  const roleLabel = useMemo(() => {
-    const r = roleUpper(session?.role) || "STAFF";
-    return r;
-  }, [session]);
+  const roleLabel = useMemo(() => roleUpper(session?.role) || "STAFF", [session]);
 
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
@@ -172,12 +202,6 @@ export default function InvoicesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const close = () => setOpenMenu(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, []);
-
   async function markAsPaid(id: number | string) {
     if (!confirm("Mark this invoice as PAID?")) return;
     const res = await rpFetch(`/api/invoices/${id}/mark-paid`, { method: "PATCH" });
@@ -200,10 +224,10 @@ export default function InvoicesPage() {
 
   function openPaymentModal(inv: any) {
     setPayInvoice(inv);
-    // default = current amount_paid (so you can adjust)
     setPayAmount(n(inv.amount_paid));
     setPayOpen(true);
     setOpenMenu(null);
+    setTimeout(() => payInputRef.current?.focus(), 30);
   }
 
   async function savePayment() {
@@ -228,6 +252,15 @@ export default function InvoicesPage() {
     }
   }
 
+  function applySearch() {
+    setSearch(searchDraft.trim());
+  }
+
+  function clearSearch() {
+    setSearchDraft("");
+    setSearch("");
+  }
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
@@ -247,6 +280,54 @@ export default function InvoicesPage() {
     const balance = filtered.reduce((s, r) => s + n(r.balance_remaining), 0);
     return { count: filtered.length, total, paid, balance };
   }, [filtered]);
+
+  const SideCard = (
+    <div
+      className="rp-side-card rp-card-anim"
+      style={{
+        minHeight: "calc(100vh - 28px)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div className="rp-brand">
+        <div className="rp-brand-logo">
+          <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
+        </div>
+        <div>
+          <div className="rp-brand-title">RampotteryHUB</div>
+          <div className="rp-brand-sub">Accounting & Stock System</div>
+        </div>
+      </div>
+
+      <nav className="rp-nav" style={{ flex: 1 }}>
+        {navItems.map((it) => (
+          <Link
+            key={it.href}
+            className={`rp-nav-btn ${it.href === "/invoices" ? "rp-nav-btn--active" : ""}`}
+            href={it.href}
+            onClick={() => setDrawerOpen(false)}
+          >
+            <span className="rp-ic3d" aria-hidden="true">
+              ▶
+            </span>
+            {it.label}
+          </Link>
+        ))}
+      </nav>
+
+      <div className="rp-side-footer rp-side-footer--in" style={{ marginTop: "auto" }}>
+        <div className="rp-role">
+          <span>Signed in</span>
+          <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+        </div>
+        <div className="rp-role" style={{ marginTop: 10 }}>
+          <span>Role</span>
+          <b>{mounted ? roleLabel : "—"}</b>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="rp-app">
@@ -284,11 +365,7 @@ export default function InvoicesPage() {
         </div>
 
         {/* Overlay + Drawer */}
-        <button
-          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
-          onClick={() => setDrawerOpen(false)}
-          aria-label="Close menu"
-        />
+        <button className={`rp-overlay ${drawerOpen ? "is-open" : ""}`} onClick={() => setDrawerOpen(false)} aria-label="Close menu" />
         <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -306,76 +383,11 @@ export default function InvoicesPage() {
             </button>
           </div>
 
-          <div className="rp-drawer-body">
-            <nav className="rp-nav">
-              {navItems.map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/invoices" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                  onClick={() => setDrawerOpen(false)}
-                >
-                  <span className="rp-ic3d" aria-hidden="true">
-                    ▶
-                  </span>
-                  {it.label}
-                </Link>
-              ))}
-            </nav>
-
-            <div className="rp-side-footer rp-side-footer--in">
-              <div className="rp-role">
-                <span>Signed in</span>
-                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
-              </div>
-              <div className="rp-role" style={{ marginTop: 10 }}>
-                <span>Role</span>
-                <b>{mounted ? roleLabel : "—"}</b>
-              </div>
-            </div>
-          </div>
+          <div className="rp-drawer-body">{SideCard}</div>
         </aside>
 
         {/* Desktop sidebar */}
-        <aside className="rp-side">
-          <div className="rp-side-card rp-card-anim">
-            <div className="rp-brand">
-              <div className="rp-brand-logo">
-                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
-              </div>
-              <div>
-                <div className="rp-brand-title">RampotteryHUB</div>
-                <div className="rp-brand-sub">Accounting & Stock System</div>
-              </div>
-            </div>
-
-            <nav className="rp-nav">
-              {navItems.map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/invoices" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                >
-                  <span className="rp-ic3d" aria-hidden="true">
-                    ▶
-                  </span>
-                  {it.label}
-                </Link>
-              ))}
-            </nav>
-
-            <div className="rp-side-footer rp-side-footer--in">
-              <div className="rp-role">
-                <span>Signed in</span>
-                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
-              </div>
-              <div className="rp-role" style={{ marginTop: 10 }}>
-                <span>Role</span>
-                <b>{mounted ? roleLabel : "—"}</b>
-              </div>
-            </div>
-          </div>
-        </aside>
+        <aside className="rp-side">{SideCard}</aside>
 
         {/* Main */}
         <main className="rp-main">
@@ -457,11 +469,12 @@ export default function InvoicesPage() {
                 </span>
                 New Invoice
               </Link>
-              <button type="button" className="rp-seg-item rp-seg-item--brand" onClick={() => load()}>
+
+              <button type="button" className="rp-seg-item rp-seg-item--brand" onClick={load} disabled={loading}>
                 <span className="rp-icbtn" aria-hidden="true">
                   ⟳
                 </span>
-                Refresh
+                {loading ? "Loading…" : "Refresh"}
               </button>
             </div>
           </section>
@@ -476,12 +489,28 @@ export default function InvoicesPage() {
             </div>
 
             <div className="rp-card-body">
-              <input
-                className="rp-input rp-input--full"
-                placeholder="Search invoice or customer…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              <div className="rp-filters-row">
+                <input
+                  className="rp-input rp-input--full"
+                  placeholder="Search invoice or customer…"
+                  value={searchDraft}
+                  onChange={(e) => setSearchDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") applySearch();
+                    if (e.key === "Escape") clearSearch();
+                  }}
+                />
+
+                <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={applySearch}>
+                  <span className="rp-ui-btn__dot" aria-hidden="true" />
+                  Search
+                </button>
+
+                <button type="button" className="rp-ui-btn" onClick={clearSearch}>
+                  <span className="rp-ui-btn__dot" aria-hidden="true" />
+                  Clear
+                </button>
+              </div>
 
               <div className="rp-chip-row">
                 {(["All", "Issued", "Paid", "Partially Paid", "Void"] as const).map((s) => (
@@ -499,124 +528,157 @@ export default function InvoicesPage() {
             </div>
           </section>
 
-          {/* Table */}
+          {/* ===== SINGLE TABLE (desktop + mobile) ===== */}
           <section className="rp-card rp-card-anim">
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Invoice Register</div>
-                <div className="rp-card-sub">Reprint-ready (3–6 months later)</div>
+                <div className="rp-card-sub">Clean view • scroll on mobile • pinned first column</div>
               </div>
               <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
 
-            <div className="rp-card-body rp-table-wrap">
-              <table className="rp-table rp-table--premium">
-                <thead>
-                  <tr>
-                    <th>Invoice</th>
-                    <th>Date</th>
-                    <th>Customer</th>
-                    <th className="rp-right">Total</th>
-                    <th className="rp-right">Paid</th>
-                    <th className="rp-right">Balance</th>
-                    <th>Status</th>
-                    <th />
-                  </tr>
-                </thead>
+            <div className="rp-card-body">
+              {/* ✅ Premium wrapper + mobile scroll */}
+              <div className="rp-table-wrap">
+                <div className="rp-table-scroll">
+                  <div className="rp-table-scroll__inner">
+                    <table className="rp-table rp-table--premium">
+                      <thead>
+                        <tr>
+                          {/* ✅ pinned first column */}
+                          <th className="rp-pin" style={{ width: 140 }}>
+                            Invoice
+                          </th>
+                          <th style={{ width: 120 }}>Date</th>
+                          <th style={{ minWidth: 220 }}>Customer</th>
+                          <th className="rp-right rp-col-hide-sm" style={{ width: 140 }}>
+                            Total
+                          </th>
+                          <th className="rp-right rp-col-hide-sm" style={{ width: 140 }}>
+                            Paid
+                          </th>
+                          <th className="rp-right rp-col-hide-sm" style={{ width: 150 }}>
+                            Balance
+                          </th>
+                          <th style={{ width: 120 }}>Status</th>
 
-                <tbody>
-                  {filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="rp-td-empty">
-                        {loading ? "Loading invoices…" : "No invoices found."}
-                      </td>
-                    </tr>
-                  ) : (
-                    filtered.map((r) => {
-                      const st = normalizeStatus(r.status);
-                      const allowDuplicate = canDuplicate(session?.role);
-                      const allowVoid = isAdmin(session?.role) && st !== "Void";
-
-                      return (
-                        <tr key={String(r.id)}>
-                          <td className="rp-strong">
-                            <button
-                              type="button"
-                              className="rp-row-link"
-                              onClick={() => router.push(`/invoices/${r.id}`)}
-                            >
-                              {r.invoice_number || `#${r.id}`}
-                            </button>
-                          </td>
-
-                          <td>{fmtDate(r.invoice_date)}</td>
-
-                          <td>
-                            <div className="rp-strong">{r.customers?.name || "—"}</div>
-                            <div className="rp-muted">{r.customers?.customer_code || ""}</div>
-                          </td>
-
-                          <td className="rp-right">{rs(n(r.total_amount))}</td>
-                          <td className="rp-right">{rs(n(r.amount_paid))}</td>
-                          <td className="rp-right">{rs(n(r.balance_remaining))}</td>
-
-                          <td>
-                            <span className={statusBadgeClass(r.status)}>{st}</span>
-                          </td>
-
-                          {/* ⋮ actions */}
-                          <td className="rp-actions-cell">
-                            <button
-                              type="button"
-                              className="rp-row-actions-btn"
-                              aria-label="Invoice actions"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpenMenu(openMenu === r.id ? null : r.id);
-                              }}
-                            >
-                              ⋮
-                            </button>
-
-                            {openMenu === r.id && (
-                              <div className="rp-row-actions-menu" onClick={(e) => e.stopPropagation()}>
-                                <button
-                                  onClick={() => {
-                                    setOpenMenu(null);
-                                    router.push(`/invoices/${r.id}`);
-                                  }}
-                                >
-                                  Reprint
-                                </button>
-
-                                {allowDuplicate && (
-                                  <button onClick={() => duplicateInvoicePrefill(r.id)}>Duplicate</button>
-                                )}
-
-                                {st !== "Void" && (
-                                  <>
-                                    <div className="rp-row-actions-sep" />
-
-                                    <button onClick={() => openPaymentModal(r)}>Set Payment…</button>
-
-                                    {st !== "Paid" && <button onClick={() => markAsPaid(r.id)}>Mark as Paid</button>}
-
-                                    {allowVoid && (
-                                      <button className="danger" onClick={() => voidInvoice(r.id)}>
-                                        Void Invoice
-                                      </button>
-                                    )}
-                                  </>
-                                )}
-                              </div>
-                            )}
-                          </td>
+                          {/* ✅ optional pinned right actions */}
+                          <th className="rp-pin-right" style={{ width: 64 }} />
                         </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                      </thead>
+
+                      <tbody>
+                        {filtered.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="rp-td-empty">
+                              {loading ? "Loading invoices…" : "No invoices found."}
+                            </td>
+                          </tr>
+                        ) : (
+                          filtered.map((r) => {
+                            const st = normalizeStatus(r.status);
+                            const allowDuplicate = canDuplicate(session?.role);
+                            const allowVoid = isAdmin(session?.role) && st !== "Void";
+
+                            return (
+                              <tr key={String(r.id)} className="rp-row-hover">
+                                {/* ✅ pinned first column cell */}
+                                <td className="rp-pin rp-strong">
+                                  <button
+                                    type="button"
+                                    className="rp-row-link"
+                                    onClick={() => router.push(`/invoices/${r.id}`)}
+                                  >
+                                    {r.invoice_number || `#${r.id}`}
+                                  </button>
+                                </td>
+
+                                <td>{fmtDate(r.invoice_date)}</td>
+
+                                <td>
+                                  <div className="rp-strong">{r.customers?.name || "—"}</div>
+                                  <div className="rp-muted">{r.customers?.customer_code || ""}</div>
+
+                                  {/* Mobile compact amounts (shown only on small screens) */}
+                                  <div className="rp-only-sm">
+                                    <div className="rp-mini-row">
+                                      <span>Total</span>
+                                      <b>{rs(n(r.total_amount))}</b>
+                                    </div>
+                                    <div className="rp-mini-row">
+                                      <span>Paid</span>
+                                      <b>{rs(n(r.amount_paid))}</b>
+                                    </div>
+                                    <div className="rp-mini-row">
+                                      <span>Balance</span>
+                                      <b>{rs(n(r.balance_remaining))}</b>
+                                    </div>
+                                  </div>
+                                </td>
+
+                                <td className="rp-right rp-col-hide-sm">{rs(n(r.total_amount))}</td>
+                                <td className="rp-right rp-col-hide-sm">{rs(n(r.amount_paid))}</td>
+                                <td className="rp-right rp-col-hide-sm">{rs(n(r.balance_remaining))}</td>
+
+                                <td>
+                                  <span className={statusBadgeClass(r.status)}>{st}</span>
+                                </td>
+
+                                {/* ⋮ menu (same as current invoices) — pinned right */}
+                                <td className="rp-actions-cell rp-pin-right">
+                                  <button
+                                    type="button"
+                                    className="rp-row-actions-btn"
+                                    aria-label="Invoice actions"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenMenu(openMenu === r.id ? null : r.id);
+                                    }}
+                                  >
+                                    ⋮
+                                  </button>
+
+                                  {openMenu === r.id && (
+                                    <div className="rp-row-actions-menu" onClick={(e) => e.stopPropagation()}>
+                                      <button
+                                        onClick={() => {
+                                          setOpenMenu(null);
+                                          router.push(`/invoices/${r.id}`);
+                                        }}
+                                      >
+                                        Reprint
+                                      </button>
+
+                                      {allowDuplicate && (
+                                        <button onClick={() => duplicateInvoicePrefill(r.id)}>Duplicate</button>
+                                      )}
+
+                                      {st !== "Void" && (
+                                        <>
+                                          <div className="rp-row-actions-sep" />
+                                          <button onClick={() => openPaymentModal(r)}>Set Payment…</button>
+                                          {st !== "Paid" && <button onClick={() => markAsPaid(r.id)}>Mark as Paid</button>}
+                                          {allowVoid && (
+                                            <button className="danger" onClick={() => voidInvoice(r.id)}>
+                                              Void Invoice
+                                            </button>
+                                          )}
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+              {/* /table-wrap */}
             </div>
           </section>
 
@@ -628,7 +690,13 @@ export default function InvoicesPage() {
       {payOpen && (
         <>
           <button className="rp-modal-overlay" onClick={() => (!paySaving ? setPayOpen(false) : null)} />
-          <div className="rp-modal">
+          <div
+            className="rp-modal"
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && !paySaving) setPayOpen(false);
+              if (e.key === "Enter" && !paySaving) savePayment();
+            }}
+          >
             <div className="rp-modal-head">
               <div>
                 <div className="rp-modal-title">Set Payment</div>
@@ -645,6 +713,7 @@ export default function InvoicesPage() {
               <div className="rp-field">
                 <label className="rp-label">Amount Paid</label>
                 <input
+                  ref={payInputRef}
                   className="rp-input rp-input--full rp-input--right"
                   value={payAmount}
                   onChange={(e) => setPayAmount(n(e.target.value))}
@@ -670,4 +739,3 @@ export default function InvoicesPage() {
     </div>
   );
 }
-

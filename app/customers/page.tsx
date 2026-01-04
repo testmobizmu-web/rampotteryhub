@@ -1,301 +1,248 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import Image from "next/image";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { rpFetch } from "@/lib/rpFetch";
 
-type CustomerRow = {
+type Customer = {
   id: number | string;
   customer_code?: string | null;
   name?: string | null;
   phone?: string | null;
-  email?: string | null;
+  whatsapp?: string | null;
   address?: string | null;
-  opening_balance?: number | string | null;
-  client?: string | null;
+  brn?: string | null;
+  vat_no?: string | null;
+  created_at?: string | null;
 };
 
-type ActivityRow = {
-  invoiceCount: number;
-  totalSales: number;
-  outstanding: number;
+type RpSession = {
+  id?: string;
+  username?: string;
+  name?: string;
+  role?: string;
 };
+
+function safeStr(v: unknown) {
+  return String(v ?? "").trim();
+}
+
+function roleUpper(r?: string) {
+  return String(r || "").toUpperCase();
+}
+function isAdmin(r?: string) {
+  return roleUpper(r) === "ADMIN";
+}
+function isManager(r?: string) {
+  return roleUpper(r) === "MANAGER";
+}
+function isPrivileged(r?: string) {
+  return isAdmin(r) || isManager(r);
+}
 
 function fmtDateTime(d: Date) {
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${dd}/${mm}/${yyyy}, ${hh}:${mi}:${ss}`;
-}
-
-function formatRs(n: number) {
-  const v = Number.isFinite(n) ? n : 0;
-  return `Rs ${v.toFixed(2)}`;
-}
-
-function safeNum(x: any) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : 0;
-}
-
-// rpFetch in your project sometimes behaves like Response in some pages;
-// this helper makes it safe in all cases.
-async function rpJson(url: string, options?: any) {
-  const res = await rpFetch(url, options as any);
-  return typeof (res as any)?.json === "function" ? await (res as any).json() : res;
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(d.getHours())}:${pad(
+    d.getMinutes()
+  )}:${pad(d.getSeconds())}`;
 }
 
 export default function CustomersPage() {
   const router = useRouter();
-  const pathname = usePathname();
 
-  // ✅ Keep hydration lock BUT do NOT return early before other hooks
-  const [mounted, setMounted] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [lastSync, setLastSync] = useState<string>("");
 
   const [loading, setLoading] = useState(true);
-  const [busySearch, setBusySearch] = useState(false);
-  const [busyDelete, setBusyDelete] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [customers, setCustomers] = useState<Customer[]>([]);
 
-  const [rows, setRows] = useState<CustomerRow[]>([]);
-  const [activity, setActivity] = useState<Record<string, ActivityRow>>({});
+  // SSR-safe session
+  const [mounted, setMounted] = useState(false);
+  const [session, setSession] = useState<RpSession | null>(null);
 
-  const [lastSync, setLastSync] = useState<string>("—");
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const debounceRef = useRef<number | null>(null);
 
-  const [queryDraft, setQueryDraft] = useState("");
-  const [queryApplied, setQueryApplied] = useState("");
+  const [filter, setFilter] = useState<"ALL" | "WITH_VAT" | "WITH_BRN">("ALL");
 
-  const [confirm, setConfirm] = useState<{ open: boolean; id?: string; name?: string }>({
-    open: false,
-  });
-
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  // ⋮ menu state
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const openMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
-  }, []);
 
-  async function fetchCustomers(q: string) {
-    const url = `/api/customers/list?limit=2000` + (q ? `&q=${encodeURIComponent(q)}` : ``);
-    const json: any = await rpJson(url, { cache: "no-store" });
+    // theme
+    const saved = localStorage.getItem("rp_theme");
+    const initial = saved === "dark" ? "dark" : "light";
+    setTheme(initial);
+    document.documentElement.dataset.theme = initial;
 
-    if (!json?.ok) throw new Error(json?.error || "Failed to load customers");
-    return Array.isArray(json.customers) ? json.customers : [];
-  }
-
-  async function fetchActivity() {
-    // If you don't have this API yet, we fail silently.
+    // session
     try {
-      const json: any = await rpJson("/api/customers/activity", { cache: "no-store" });
-      if (!json?.ok) return {};
-      return json.activityByCustomerId || {};
-    } catch {
-      return {};
-    }
-  }
-
-  async function load(q: string) {
-    setErr(null);
-    const data = await fetchCustomers(q);
-    const act = await fetchActivity();
-
-    setRows(data);
-    setActivity(act);
-    setLastSync(fmtDateTime(new Date()));
-  }
-
-  useEffect(() => {
-    let alive = true;
-
-    async function init() {
-      setLoading(true);
-      try {
-        await load("");
-      } catch (e: any) {
-        if (!alive) return;
-        setErr(e?.message || "Failed to load customers");
-      } finally {
-        if (!alive) return;
-        setLoading(false);
+      const raw = localStorage.getItem("rp_user");
+      if (!raw) {
+        router.replace("/login");
+        return;
       }
+      const s = JSON.parse(raw);
+      setSession(s);
+    } catch {
+      router.replace("/login");
+      return;
     }
-
-    init();
-    return () => {
-      alive = false;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleLogout() {
+  // Close ⋮ menu on outside click / ESC
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (!openMenuId) return;
+      const t = e.target as Node | null;
+      if (openMenuRef.current && t && openMenuRef.current.contains(t)) return;
+      setOpenMenuId(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (!openMenuId) return;
+      if (e.key === "Escape") setOpenMenuId(null);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [openMenuId]);
+
+  const userLabel = useMemo(() => {
+    const name = (session?.name || session?.username || "").trim();
+    return name ? name : "User";
+  }, [session]);
+
+  const roleLabel = useMemo(() => roleUpper(session?.role) || "STAFF", [session]);
+
+  const canSeeAdminNav = mounted && isAdmin(session?.role);
+  const canBulkImport = mounted && isPrivileged(session?.role);
+
+  const navItems = useMemo(() => {
+    const base = [
+      { href: "/", label: "Dashboard" },
+      { href: "/invoices", label: "Invoices" },
+      { href: "/credit-notes", label: "Credit Notes" },
+      { href: "/stock", label: "Stock & Categories" },
+      { href: "/stock-movements", label: "Stock Movements" },
+      { href: "/customers", label: "Customers" },
+      { href: "/reports", label: "Reports & Statements" },
+    ];
+    if (canSeeAdminNav) base.push({ href: "/admin/users", label: "Users & Permissions" });
+    return base;
+  }, [canSeeAdminNav]);
+
+  useEffect(() => {
+    // debounce search
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => setDebouncedQ(q.trim()), 220);
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  }, [q]);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("rp_theme", next);
+  }
+
+  async function handleLogout() {
     try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
       localStorage.removeItem("rp_user");
-      localStorage.removeItem("rpUser");
-      localStorage.removeItem("user");
-      localStorage.removeItem("rp_role");
-      localStorage.removeItem("role");
-    } catch {}
-    router.push("/login");
+      window.location.href = "/login";
+    }
   }
 
-  async function doSearch(nextQuery: string) {
-    const q = (nextQuery || "").trim();
-    setBusySearch(true);
-    setErr(null);
-
+  async function load() {
     try {
-      await load(q);
-      setQueryApplied(q);
+      setErr(null);
+      setLoading(true);
+
+      const res = await rpFetch("/api/customers/list", { method: "GET", cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Failed to load customers");
+      }
+
+      const list: Customer[] = Array.isArray(json.customers) ? json.customers : [];
+      setCustomers(list);
+      setLastSync(fmtDateTime(new Date()));
     } catch (e: any) {
-      setErr(e?.message || "Search failed");
+      setErr(e?.message || "Failed to load customers");
+      setCustomers([]);
     } finally {
-      setBusySearch(false);
+      setLoading(false);
     }
   }
 
-  function applySearch() {
-    doSearch(queryDraft);
-  }
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  function clearSearch() {
-    setQueryDraft("");
-    setQueryApplied("");
-    doSearch("");
-    setTimeout(() => inputRef.current?.focus(), 0);
-  }
+  const filtered = useMemo(() => {
+    const s = debouncedQ.toLowerCase();
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      applySearch();
-    }
-  }
+    let list = customers;
 
-  async function onRefresh() {
-    await doSearch(queryApplied);
-  }
+    if (filter === "WITH_VAT") list = list.filter((c) => safeStr(c.vat_no));
+    if (filter === "WITH_BRN") list = list.filter((c) => safeStr(c.brn));
 
-  async function deleteCustomer(id: string) {
-    setBusyDelete(true);
-    setErr(null);
+    if (!s) return list;
 
-    try {
-      const json: any = await rpJson(`/api/customers/${id}`, {
-        method: "DELETE",
-      });
+    return list.filter((c) => {
+      const blob = [
+        c.customer_code,
+        c.name,
+        c.phone,
+        c.whatsapp,
+        c.address,
+        c.brn,
+        c.vat_no,
+      ]
+        .map(safeStr)
+        .join(" ")
+        .toLowerCase();
 
-      if (!json?.ok) throw new Error(json?.error || "Delete failed");
-
-      setConfirm({ open: false });
-      await onRefresh();
-    } catch (e: any) {
-      setErr(e?.message || "Delete failed");
-    } finally {
-      setBusyDelete(false);
-    }
-  }
-
-  const stats = useMemo(() => {
-    const total = rows.length;
-    const openingSum = rows.reduce((s, x) => s + safeNum(x.opening_balance), 0);
-
-    let invCount = 0;
-    let outstanding = 0;
-
-    Object.values(activity || {}).forEach((a) => {
-      invCount += safeNum(a.invoiceCount);
-      outstanding += safeNum(a.outstanding);
+      return blob.includes(s);
     });
+  }, [customers, debouncedQ, filter]);
 
-    return { total, openingSum, invCount, outstanding };
-  }, [rows, activity]);
+  const kpis = useMemo(() => {
+    const total = filtered.length;
+    const withVat = filtered.filter((c) => safeStr(c.vat_no)).length;
+    const withBrn = filtered.filter((c) => safeStr(c.brn)).length;
+    const missingCode = filtered.filter((c) => !safeStr(c.customer_code)).length;
+    return { total, withVat, withBrn, missingCode };
+  }, [filtered]);
 
-  const searchChanged = queryDraft.trim() !== queryApplied.trim();
+  function toggleRowMenu(id: string) {
+    setOpenMenuId((cur) => (cur === id ? null : id));
+  }
 
-  // ✅ Now it’s safe to lock hydration (AFTER hooks)
-  if (!mounted) return null;
-
-  function SideNav() {
-    return (
-      <aside className="rp-side rp-side--desktop">
-        <div className="rp-side-card rp-card-anim">
-          <div className="rp-brand">
-            <div className="rp-brand-logo rp-brand-logo--white">
-              <img
-                src="/images/logo/logo.png"
-                alt="Ram Pottery"
-                width={40}
-                height={40}
-                style={{ display: "block", objectFit: "contain" }}
-              />
-            </div>
-            <div>
-              <div className="rp-brand-title">RamPotteryHUB</div>
-              <div className="rp-brand-sub">Accounting • Stock • Invoicing</div>
-            </div>
-          </div>
-
-          <nav className="rp-nav" aria-label="Main navigation">
-            <Link className={`rp-nav-btn ${pathname === "/" ? "rp-nav-btn--active" : ""}`} href="/" prefetch={false}>
-              Dashboard
-            </Link>
-
-            <Link
-              className={`rp-nav-btn ${pathname?.startsWith("/invoices") ? "rp-nav-btn--active" : ""}`}
-              href="/invoices"
-              prefetch={false}
-            >
-              Invoices
-            </Link>
-
-            <Link
-              className={`rp-nav-btn ${pathname?.startsWith("/credit-notes") ? "rp-nav-btn--active" : ""}`}
-              href="/credit-notes"
-              prefetch={false}
-            >
-              Credit Notes
-            </Link>
-
-            <Link
-              className={`rp-nav-btn ${pathname?.startsWith("/customers") ? "rp-nav-btn--active" : ""}`}
-              href="/customers"
-              prefetch={false}
-            >
-              Customers
-            </Link>
-
-            <Link
-              className={`rp-nav-btn ${pathname?.startsWith("/products") ? "rp-nav-btn--active" : ""}`}
-              href="/products"
-              prefetch={false}
-            >
-              Products
-            </Link>
-          </nav>
-
-          <div className="rp-side-footer">
-            <div className="rp-role">
-              <span>System</span>
-              <b>ADMIN</b>
-            </div>
-
-            <div style={{ height: 10 }} />
-
-            <button className="rp-btn rp-btn--danger" onClick={handleLogout} type="button">
-              Log Out
-            </button>
-          </div>
-        </div>
-      </aside>
-    );
+  function goTo(path: string) {
+    setOpenMenuId(null);
+    router.push(path);
   }
 
   return (
-    <div className="rp-app rp-enter">
+    <div className="rp-app">
       <div className="rp-bg" aria-hidden="true">
         <div className="rp-bg-orb rp-bg-orb--1" />
         <div className="rp-bg-orb rp-bg-orb--2" />
@@ -303,36 +250,149 @@ export default function CustomersPage() {
         <div className="rp-bg-grid" />
       </div>
 
-      <div className="rp-shell">
-        <SideNav />
+      <div className="rp-shell rp-enter">
+        {/* Mobile top bar */}
+        <div className="rp-mtop">
+          <button
+            type="button"
+            className="rp-icon-btn rp-burger"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open menu"
+          >
+            <span aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          </button>
 
+          <div className="rp-mtop-brand">
+            <div className="rp-mtop-title">RampotteryHUB</div>
+            <div className="rp-mtop-sub">Customers</div>
+          </div>
+
+          <button type="button" className="rp-icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
+            {theme === "dark" ? "☀" : "🌙"}
+          </button>
+        </div>
+
+        {/* Overlay + Drawer */}
+        <button
+          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
+          onClick={() => setDrawerOpen(false)}
+          aria-label="Close menu"
+        />
+        <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
+          <div className="rp-drawer-head">
+            <div className="rp-drawer-brand">
+              <div className="rp-drawer-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={28} height={28} priority />
+              </div>
+              <div>
+                <div className="rp-drawer-title">RampotteryHUB</div>
+                <div className="rp-drawer-sub">Accounting & Stock System</div>
+              </div>
+            </div>
+
+            <button type="button" className="rp-icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close">
+              ✕
+            </button>
+          </div>
+
+          <div className="rp-drawer-body">
+            <nav className="rp-nav">
+              {navItems.map((it) => (
+                <Link
+                  key={it.href}
+                  className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`}
+                  href={it.href}
+                  onClick={() => setDrawerOpen(false)}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">
+                    ▶
+                  </span>
+                  {it.label}
+                </Link>
+              ))}
+            </nav>
+
+            <div className="rp-side-footer rp-side-footer--in">
+              <div className="rp-role">
+                <span>Signed in</span>
+                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{mounted ? roleLabel : "—"}</b>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        {/* Desktop sidebar */}
+        <aside className="rp-side">
+          <div className="rp-side-card rp-card-anim">
+            <div className="rp-brand">
+              <div className="rp-brand-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery Ltd" width={30} height={30} priority />
+              </div>
+              <div>
+                <div className="rp-brand-title">RampotteryHUB</div>
+                <div className="rp-brand-sub">Accounting & Stock System</div>
+              </div>
+            </div>
+
+            <nav className="rp-nav">
+              {navItems.map((it) => (
+                <Link
+                  key={it.href}
+                  className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`}
+                  href={it.href}
+                >
+                  <span className="rp-ic3d" aria-hidden="true">
+                    ▶
+                  </span>
+                  {it.label}
+                </Link>
+              ))}
+            </nav>
+
+            <div className="rp-side-footer rp-side-footer--in">
+              <div className="rp-role">
+                <span>Signed in</span>
+                <b title={userLabel}>{mounted ? userLabel : "—"}</b>
+              </div>
+              <div className="rp-role" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <b>{mounted ? roleLabel : "—"}</b>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        {/* Main */}
         <main className="rp-main">
-          {/* HEADER */}
-          <header className="rp-top rp-top--invoices rp-card-anim" style={{ animationDelay: "60ms" }}>
-            <div className="rp-inv-left">
-              <Link className="rp-ui-btn rp-ui-btn--soft rp-glow" href="/" prefetch={false}>
-                ● Dashboard
-              </Link>
+          {/* Top bar */}
+          <header className="rp-top rp-top--saas rp-card-anim" style={{ animationDelay: "60ms" }}>
+            <div className="rp-top-left--actions">
+              <button type="button" className="rp-ui-btn rp-ui-btn--brand" onClick={toggleTheme}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                {theme === "dark" ? "☀ Light" : "🌙 Dark"}
+              </button>
+
+              <button type="button" className="rp-ui-btn rp-ui-btn--danger" onClick={handleLogout}>
+                <span className="rp-ui-btn__dot" aria-hidden="true" />
+                Log Out
+              </button>
             </div>
 
-            <div className="rp-inv-center">
-              <div className="rp-page-chip">
-                <div className="rp-page-chip__logo">
-                  <img src="/images/logo/logo.png" alt="Ram Pottery" width={26} height={26} style={{ display: "block" }} />
-                </div>
-                <div className="rp-page-chip__title">Customers</div>
-              </div>
-
-              <div className="rp-page-sub">Add • Edit • Partywise Pricing • Activity</div>
-
-              <div className="rp-breadcrumb" aria-label="Breadcrumb">
-                <span className="rp-bc-item rp-bc-item--from">Dashboard</span>
-                <span className="rp-bc-sep">→</span>
-                <span className="rp-bc-item rp-bc-item--to">Customers</span>
+            <div className="rp-top-center--logo">
+              <div className="rp-top-logo">
+                <Image src="/images/logo/logo.png" alt="Ram Pottery" width={44} height={44} priority />
               </div>
             </div>
 
-            <div className="rp-inv-right">
+            <div className="rp-top-right--sync">
               <div className="rp-sync">
                 <div className="rp-sync-label">Last sync :</div>
                 <div className="rp-sync-time">{lastSync || "—"}</div>
@@ -340,259 +400,252 @@ export default function CustomersPage() {
             </div>
           </header>
 
-          {/* ACTION BAR */}
-          <section className="rp-bar rp-card-anim" style={{ animationDelay: "110ms" }}>
-            <Link className="rp-ui-btn rp-ui-btn--danger rp-glow" href="/customers/new" prefetch={false}>
-              + Add Customer
-            </Link>
-
-            <button className="rp-ui-btn rp-ui-btn--soft rp-glow" onClick={onRefresh} type="button">
-              Refresh
-            </button>
-
-            <Link className="rp-ui-btn rp-ui-btn--soft rp-glow" href="/customers/pricing-import" prefetch={false}>
-              Bulk Pricing Import
-            </Link>
-
-            <div className="rp-bar-spacer" />
-
-            <span className="rp-chip rp-chip--muted">
-              Showing <b>{rows.length}</b>
-              {queryApplied ? (
-                <>
-                  {" "}
-                  • Filter: <b>{queryApplied}</b>
-                </>
-              ) : null}
-            </span>
-          </section>
-
-          {/* RED STATS BAR */}
-          <section className="rp-stats rp-card-anim" style={{ animationDelay: "150ms" }}>
-            <div className="rp-stat">
-              <div className="rp-stat-k">Customers</div>
-              <div className="rp-stat-v">{stats.total}</div>
-              <div className="rp-stat-s">Total records</div>
+          {/* Executive header */}
+          <section className="rp-exec rp-card-anim">
+            <div className="rp-exec__left">
+              <div className="rp-exec__title">Customers</div>
+              <div className="rp-exec__sub">Search • Clean codes • Quick actions • Bulk import (Admin/Manager)</div>
             </div>
-
-            <div className="rp-stat">
-              <div className="rp-stat-k">Invoices</div>
-              <div className="rp-stat-v">{stats.invCount}</div>
-              <div className="rp-stat-s">Total invoice count</div>
-            </div>
-
-            <div className="rp-stat">
-              <div className="rp-stat-k">Opening Total</div>
-              <div className="rp-stat-v">{formatRs(stats.openingSum)}</div>
-              <div className="rp-stat-s">Sum opening balances</div>
-            </div>
-
-            <div className="rp-stat">
-              <div className="rp-stat-k">Outstanding</div>
-              <div className="rp-stat-v">{formatRs(stats.outstanding)}</div>
-              <div className="rp-stat-s">Balance remaining</div>
+            <div className="rp-exec__right">
+              <span className={`rp-live ${loading ? "is-dim" : ""}`}>
+                <span className="rp-live-dot" aria-hidden="true" />
+                {loading ? "Syncing" : "Live"}
+              </span>
+              <span className={`rp-chip rp-chip--soft ${err ? "rp-chip--warn" : ""}`}>
+                {err ? "Attention needed" : "All systems normal"}
+              </span>
             </div>
           </section>
 
-          {/* SEARCH */}
-          <section className="rp-panel rp-card-anim" style={{ animationDelay: "190ms" }}>
-            <div className="rp-panel-head">
+          {/* KPI row */}
+          <section className="rp-kpi-pro rp-card-anim">
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Customers</div>
+              <div className="rp-kpi-pro__value">{kpis.total}</div>
+              <div className="rp-kpi-pro__sub">Filtered results</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">With VAT</div>
+              <div className="rp-kpi-pro__value">{kpis.withVat}</div>
+              <div className="rp-kpi-pro__sub">VAT No present</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">With BRN</div>
+              <div className="rp-kpi-pro__value">{kpis.withBrn}</div>
+              <div className="rp-kpi-pro__sub">BRN present</div>
+            </div>
+            <div className="rp-kpi-pro__cell">
+              <div className="rp-kpi-pro__title">Missing Code</div>
+              <div className="rp-kpi-pro__value">{kpis.missingCode}</div>
+              <div className="rp-kpi-pro__sub">Needs cleanup</div>
+            </div>
+          </section>
+
+          {/* Quick actions */}
+          <section className="rp-actions rp-card-anim">
+            <div className="rp-seg rp-seg--pro">
+              <button type="button" className="rp-seg-item rp-seg-item--brand" onClick={() => load()} disabled={loading}>
+                <span className="rp-icbtn" aria-hidden="true">
+                  ⟳
+                </span>
+                Refresh
+              </button>
+
+              <Link className="rp-seg-item rp-seg-item--brand" href="/customers/new">
+                <span className="rp-icbtn" aria-hidden="true">
+                  👤
+                </span>
+                New Customer
+              </Link>
+
+              {canBulkImport ? (
+                <Link className="rp-seg-item rp-seg-item--brand" href="/customers/pricing-import">
+                  <span className="rp-icbtn" aria-hidden="true">
+                    ⬆
+                  </span>
+                  Bulk Import
+                </Link>
+              ) : (
+                <button type="button" className="rp-seg-item" disabled title="Admin/Manager only">
+                  <span className="rp-icbtn" aria-hidden="true">
+                    🔒
+                  </span>
+                  Bulk Import
+                </button>
+              )}
+            </div>
+          </section>
+
+          {/* Search + filters */}
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
               <div>
-                <div className="rp-panel-title">Search & Filters</div>
-                <div className="rp-panel-sub">Code • name • phone (click Search)</div>
+                <div className="rp-card-title">Search & Filters</div>
+                <div className="rp-card-sub">Code • name • phone • whatsapp • BRN • VAT</div>
               </div>
-              <div className="rp-panel-badge">{busySearch ? "Searching…" : "Ready"}</div>
+              <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
 
-            <div className="rp-panel-body">
-              <div className="rp-row rp-row--wrap" style={{ gap: 12 }}>
-                <input
-                  ref={inputRef}
-                  className="rp-input rp-input--full"
-                  placeholder="Type search then click Search…"
-                  value={queryDraft}
-                  onChange={(e) => setQueryDraft(e.target.value)}
-                  onKeyDown={onKeyDown}
-                  disabled={busySearch}
-                />
+            <div className="rp-card-body">
+              <input
+                className="rp-input rp-input--full"
+                placeholder="Search customers…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
 
-                <button
-                  className={`rp-ui-btn rp-ui-btn--soft rp-glow ${searchChanged ? "rp-pulse" : ""}`}
-                  type="button"
-                  onClick={applySearch}
-                  disabled={busySearch}
-                >
-                  ● Search
-                </button>
-
-                <button className="rp-ui-btn rp-ui-btn--soft rp-glow" type="button" onClick={clearSearch} disabled={busySearch}>
-                  ● Clear
-                </button>
-              </div>
-
-              {err ? <div className="rp-error-line" style={{ marginTop: 10 }}>{err}</div> : null}
-            </div>
-          </section>
-
-          {/* LIST */}
-          <section className="rp-panel rp-card-anim" style={{ animationDelay: "230ms" }}>
-            <div className="rp-panel-head">
-              <div>
-                <div className="rp-panel-title">Customer List</div>
-                <div className="rp-panel-sub">Edit • Delete • Pricing • Activity</div>
-              </div>
-
-              <div className="rp-panel-right">
-                <button className="rp-ui-btn rp-ui-btn--danger rp-glow" onClick={onRefresh} type="button">
-                  Refresh
-                </button>
-              </div>
-            </div>
-
-            <div className="rp-panel-body" style={{ paddingTop: 10 }}>
-              <div className="rp-table-wrap rp-table-wrap--premium">
-                <table className="rp-table rp-table--premium">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 120 }}>Code</th>
-                      <th style={{ width: 220 }}>Name</th>
-                      <th style={{ width: 140 }}>Phone</th>
-                      <th style={{ width: 130 }}>Invoices</th>
-                      <th style={{ width: 180 }}>Outstanding</th>
-                      <th style={{ width: 160 }}>Opening</th>
-                      <th style={{ width: 340 }}>Actions</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {loading ? (
-                      <tr><td className="rp-td-empty" colSpan={7}>Loading customers…</td></tr>
-                    ) : rows.length === 0 ? (
-                      <tr><td className="rp-td-empty" colSpan={7}>No customers found.</td></tr>
-                    ) : (
-                      rows.map((c) => {
-                        const cid = String(c.id);
-                        const a = activity?.[cid] || { invoiceCount: 0, totalSales: 0, outstanding: 0 };
-
-                        return (
-                          <tr className="rp-row-hover" key={cid}>
-                            <td className="rp-strong">{c.customer_code || "—"}</td>
-                            <td style={{ fontWeight: 950 }}>{c.name || "—"}</td>
-                            <td>{c.phone || "—"}</td>
-                            <td style={{ fontWeight: 950 }}>{a.invoiceCount}</td>
-                            <td style={{ fontWeight: 950 }}>{formatRs(safeNum(a.outstanding))}</td>
-                            <td style={{ fontWeight: 950 }}>{formatRs(safeNum(c.opening_balance))}</td>
-                            <td>
-                              <div className="rp-row rp-row--wrap" style={{ gap: 10 }}>
-                                <Link className="rp-ui-btn rp-ui-btn--soft rp-glow" href={`/customers/${cid}/edit`} prefetch={false}>
-                                  Edit
-                                </Link>
-
-                                <Link className="rp-ui-btn rp-ui-btn--soft rp-glow" href={`/customers/${cid}/pricing`} prefetch={false}>
-                                  Pricing →
-                                </Link>
-
-                                <button
-                                  className="rp-ui-btn rp-ui-btn--danger rp-glow"
-                                  type="button"
-                                  onClick={() => setConfirm({ open: true, id: cid, name: c.name || "Customer" })}
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          {/* CONFIRM MODAL */}
-          {confirm.open ? (
-            <div className="rp-modal-backdrop" role="dialog" aria-modal="true">
-              <div className="rp-modal">
-                <div className="rp-modal-title">Delete customer?</div>
-                <div className="rp-modal-sub">
-                  This will permanently remove <b>{confirm.name}</b>.
-                  <br />
-                  If customer has invoices, delete may be blocked for safety.
-                </div>
-
-                <div className="rp-row" style={{ gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
-                  <button className="rp-ui-btn rp-ui-btn--soft rp-glow" type="button" onClick={() => setConfirm({ open: false })} disabled={busyDelete}>
-                    Cancel
-                  </button>
+              <div className="rp-chip-row">
+                {[
+                  { key: "ALL", label: "All" },
+                  { key: "WITH_VAT", label: "With VAT" },
+                  { key: "WITH_BRN", label: "With BRN" },
+                ].map((x) => (
                   <button
-                    className="rp-ui-btn rp-ui-btn--danger rp-glow"
+                    key={x.key}
+                    className={`rp-filter-pill ${filter === (x.key as any) ? "rp-filter-pill--active" : ""}`}
+                    onClick={() => setFilter(x.key as any)}
                     type="button"
-                    onClick={() => deleteCustomer(String(confirm.id))}
-                    disabled={busyDelete}
                   >
-                    {busyDelete ? "Deleting…" : "Yes, Delete"}
+                    {x.label}
                   </button>
-                </div>
+                ))}
+              </div>
+
+              {err ? <div className="rp-note rp-note--warn">{err}</div> : null}
+            </div>
+          </section>
+
+          {/* Table */}
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
+              <div>
+                <div className="rp-card-title">Customer Register</div>
+                <div className="rp-card-sub">Executive view • clean codes • quick actions</div>
+              </div>
+              <span className="rp-chip rp-chip--soft">{filtered.length} result(s)</span>
+            </div>
+
+            <div className="rp-card-body rp-table-wrap">
+              <table className="rp-table rp-table--premium">
+                <thead>
+                  <tr>
+                    <th style={{ width: 140 }}>Code</th>
+                    <th>Name</th>
+                    <th style={{ width: 140 }}>Phone</th>
+                    <th style={{ width: 150 }}>WhatsApp</th>
+                    <th style={{ width: 180 }}>BRN</th>
+                    <th style={{ width: 180 }}>VAT</th>
+                    <th style={{ width: 90, textAlign: "right" }}>⋮</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={7} className="rp-td-empty">
+                        Loading customers…
+                      </td>
+                    </tr>
+                  ) : filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="rp-td-empty">
+                        No customers found.
+                      </td>
+                    </tr>
+                  ) : (
+                    filtered.map((c) => {
+                      const id = String(c.id);
+                      const code = safeStr(c.customer_code) || "—";
+                      const name = safeStr(c.name) || "—";
+                      const addr = safeStr(c.address);
+
+                      const isOpen = openMenuId === id;
+
+                      return (
+                        <tr key={id}>
+                          <td className="rp-strong">{code}</td>
+                          <td>
+                            <div className="rp-strong">{name}</div>
+                            {addr ? <div className="rp-muted">{addr}</div> : null}
+                          </td>
+                          <td>{safeStr(c.phone) || "—"}</td>
+                          <td>{safeStr(c.whatsapp) || "—"}</td>
+                          <td>{safeStr(c.brn) || "—"}</td>
+                          <td>{safeStr(c.vat_no) || "—"}</td>
+
+                          {/* ⋮ dropdown actions */}
+                          <td style={{ textAlign: "right" }}>
+                            <div
+                              className="rp-row-actions"
+                              ref={isOpen ? openMenuRef : undefined}
+                              style={{ position: "relative", display: "inline-block" }}
+                            >
+                              <button
+                                type="button"
+                                className="rp-icon-btn rp-icon-btn--kebab"
+                                aria-haspopup="menu"
+                                aria-expanded={isOpen ? "true" : "false"}
+                                onClick={() => toggleRowMenu(id)}
+                                title="Actions"
+                              >
+                                ⋮
+                              </button>
+
+                              {isOpen ? (
+                                <div
+                                  className="rp-menu rp-menu--right"
+                                  role="menu"
+                                  aria-label="Customer actions"
+                                  style={{
+                                    position: "absolute",
+                                    right: 0,
+                                    top: "calc(100% + 8px)",
+                                    minWidth: 180,
+                                    zIndex: 50,
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="rp-menu-item"
+                                    onClick={() => goTo(`/customers/${id}/edit`)}
+                                  >
+                                    ✏️ Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="rp-menu-item"
+                                    onClick={() => goTo(`/customers/${id}/pricing`)}
+                                  >
+                                    💰 Pricing
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="rp-menu-item rp-menu-item--danger"
+                                    onClick={() => goTo(`/customers/${id}/activity`)}
+                                  >
+                                    📌 Activity
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+
+              <div style={{ marginTop: 10 }} className="rp-muted">
+                Tip: Keep <b>customer_code</b> unique (e.g. CUST-001) to speed up invoice creation.
               </div>
             </div>
-          ) : null}
+          </section>
 
-          {/* local styles */}
-          <style jsx>{`
-            .rp-modal-backdrop {
-              position: fixed;
-              inset: 0;
-              background: rgba(0, 0, 0, 0.35);
-              display: grid;
-              place-items: center;
-              padding: 18px;
-              z-index: 9999;
-            }
-            .rp-modal {
-              width: min(560px, 100%);
-              border-radius: 22px;
-              border: 1px solid var(--rp-border);
-              background: var(--rp-card);
-              box-shadow: 0 30px 80px rgba(0, 0, 0, 0.25);
-              padding: 16px 16px;
-              animation: pop 180ms ease-out both;
-            }
-            .rp-modal-title {
-              font-weight: 950;
-              font-size: 18px;
-              letter-spacing: -0.2px;
-            }
-            .rp-modal-sub {
-              margin-top: 6px;
-              color: var(--rp-muted);
-              font-weight: 800;
-              line-height: 1.4;
-            }
-            @keyframes pop {
-              from { transform: translateY(8px) scale(0.98); opacity: 0; }
-              to { transform: translateY(0) scale(1); opacity: 1; }
-            }
-            .rp-pulse {
-              position: relative;
-            }
-            .rp-pulse::after {
-              content: "";
-              position: absolute;
-              inset: -2px;
-              border-radius: 18px;
-              border: 2px solid rgba(184, 0, 0, 0.25);
-              opacity: 0;
-              animation: pulse 1.2s ease-in-out infinite;
-              pointer-events: none;
-            }
-            @keyframes pulse {
-              0% { transform: scale(1); opacity: 0; }
-              40% { opacity: 0.9; }
-              100% { transform: scale(1.06); opacity: 0; }
-            }
-          `}</style>
+          <footer className="rp-footer">© {new Date().getFullYear()} Ram Pottery Ltd • Built by Mobiz.mu</footer>
         </main>
       </div>
     </div>
