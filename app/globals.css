@@ -1847,6 +1847,18 @@ a {
   padding: 0 6px;
 }
 
+/* invoice qty bigger for 3+ digits */
+.inv-input--qtywide{
+  min-width: 74px;
+  width: 74px;
+  font-weight: 900;
+  letter-spacing: .2px;
+}
+@media (min-width: 900px){
+  .inv-input--qtywide{ min-width: 86px; width: 86px; }
+}
+
+
 /* ===========================
    PRINT: ONLY show RamPotteryDoc
    =========================== */

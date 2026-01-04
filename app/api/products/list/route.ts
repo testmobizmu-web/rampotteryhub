@@ -20,7 +20,9 @@ function supaAdmin() {
 export async function GET(req: NextRequest) {
   try {
     const user = getUserFromHeader(req.headers.get("x-rp-user"));
-    if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
 
     const supabase = supaAdmin();
 
@@ -29,7 +31,19 @@ export async function GET(req: NextRequest) {
 
     let q = supabase
       .from("products")
-      .select("id, item_code, sku, name, description, units_per_box, selling_price, is_active, image_url")
+      .select(
+        `
+        id,
+        item_code,
+        sku,
+        name,
+        description,
+        units_per_box,
+        selling_price,
+        is_active,
+        image_url
+        `
+      )
       .order("item_code", { ascending: true })
       .order("name", { ascending: true })
       .limit(limit);
@@ -37,12 +51,23 @@ export async function GET(req: NextRequest) {
     if (activeOnly) q = q.eq("is_active", true);
 
     const { data, error } = await q;
+    if (error) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    }
 
-    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    // 🔑 Normalize for invoice UI
+    const products = (data || []).map((p: any) => ({
+      ...p,
+      price_excl_vat: Number(p.selling_price) || 0, // 👈 critical fix
+      vat_rate: 15, // fixed VAT rate
+    }));
 
-    return NextResponse.json({ ok: true, products: data || [] });
+    return NextResponse.json({ ok: true, products });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "Server error" },
+      { status: 500 }
+    );
   }
 }
 

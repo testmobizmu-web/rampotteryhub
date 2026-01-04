@@ -13,6 +13,7 @@ type CustomerRow = {
   brn: string;
   vat_no: string;
   customer_code: string;
+  opening_balance?: number | null;
 };
 
 type ProductRow = {
@@ -132,6 +133,10 @@ export default function NewInvoiceClient() {
   const [previousBalance, setPreviousBalance] = useState<number>(0);
   const [amountPaid, setAmountPaid] = useState<number>(0);
 
+  // ✅ MUST be here (before any useEffect/useMemo below)
+  const [prevTouched, setPrevTouched] = useState(false);
+  const [paidTouched, setPaidTouched] = useState(false);
+
   const [vatPercent, setVatPercent] = useState<number>(15);
 
   const [invoiceNumber, setInvoiceNumber] = useState<string>("(Auto when saved)");
@@ -184,7 +189,6 @@ export default function NewInvoiceClient() {
   useEffect(() => {
     if (!duplicateId) return;
 
-    // lock duplicate for admin/manager only
     if (!canDuplicate(role)) {
       alert("Only Admin / Manager can duplicate invoices.");
       router.replace("/invoices");
@@ -195,28 +199,26 @@ export default function NewInvoiceClient() {
 
     (async () => {
       try {
-        const res = await rpFetch(`/api/invoices/${duplicateId}`, { cache: "no-store" });
+        const res = await rpFetch(`/api/invoices/get/${duplicateId}`, { cache: "no-store" });
         const json = await res.json();
         if (!json?.ok || !alive) return;
 
         const inv = json.invoice;
         const items = json.items || [];
 
-        // badge: "Duplicated from INV-xxx" (screen only)
         setDupFromNo(String(inv.invoice_number || duplicateId));
 
-        // Header
         setCustomerId(inv.customer_id);
         setPurchaseOrderNo(inv.purchase_order_no || "");
         setSalesRep(inv.sales_rep || "Mr Koushal");
         setSalesRepPhone(inv.sales_rep_phone || "");
         setVatPercent(inv.vat_percent ?? 15);
 
-        // reset payments
         setPreviousBalance(0);
         setAmountPaid(0);
+        setPrevTouched(false);
+        setPaidTouched(false);
 
-        // Items
         const cloned = items.map((it: any) =>
           recalc({
             id: uid(),
@@ -251,6 +253,21 @@ export default function NewInvoiceClient() {
     [customers, customerId]
   );
 
+  // ✅ Put AFTER customer is defined (and uses touched guards)
+  useEffect(() => {
+    if (!customerId) return;
+
+    if (!prevTouched) {
+      const ob = n2(customer?.opening_balance ?? 0);
+      setPreviousBalance(ob);
+    }
+
+    if (!paidTouched) {
+      setAmountPaid(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId, customer?.opening_balance, prevTouched, paidTouched]);
+
   const realLines = useMemo(() => lines.filter((l) => !!l.product_id), [lines]);
 
   const subtotal = useMemo(() => {
@@ -274,69 +291,103 @@ export default function NewInvoiceClient() {
     setLines((prev) => (prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)));
   }
 
-  async function onSave() {
-  if (!customerId) return alert("Please select a customer.");
-  if (!invoiceDate) return alert("Please select invoice date.");
-  if (realLines.length === 0) return alert("Please add at least one item.");
+  // ✅ Atomic product apply: ensures Unit Ex/Inc/LineTotal refresh immediately
+  function applyProductToRow(rowId: string, product: ProductRow | null) {
+    setLines((prev) =>
+      prev.map((r) => {
+        if (r.id !== rowId) return r;
 
-  setSaving(true);
+        if (!product) {
+          return recalc({
+            ...r,
+            product_id: null,
+            item_code: "",
+            description: "",
+            units_per_box: 1,
+            unit_price_excl_vat: 0,
+            vat_rate: 15,
+            uom: "BOX",
+            box_qty: 0,
+          });
+        }
 
-  try {
-    const payload = {
-      customerId,
-      invoiceDate,
-      purchaseOrderNo: purchaseOrderNo || null,
-      salesRep: salesRep || null,
-      salesRepPhone: salesRepPhone || null,
-      vatPercent: n2(vatPercent),
-      previousBalance: n2(previousBalance),
-      amountPaid: n2(amountPaid),
-      discountPercent: 0,
-
-      items: realLines.map((l) => {
-        const qty = Math.trunc(n2(l.box_qty)) || 1;
-
-        return {
-          product_id: l.product_id,
-          description: l.description || null,
-
-          uom: l.uom,
-
-          // 🔒 never NULL (DB constraint)
-          box_qty: qty,
-          pcs_qty: l.uom === "PCS" ? qty : null,
-
-          units_per_box: Math.trunc(n2(l.units_per_box)),
-          total_qty: Math.trunc(n2(l.total_qty)),
-
-          unit_price_excl_vat: n2(l.unit_price_excl_vat),
-          vat_rate: n2(l.vat_rate),
-          unit_vat: n2(l.unit_vat),
-          unit_price_incl_vat: n2(l.unit_price_incl_vat),
-          line_total: n2(l.line_total),
-        };
-      }),
-    };
-
-    const res = await rpFetch("/api/invoices/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok || !json?.ok) {
-      throw new Error(json?.error || "Failed to create invoice");
-    }
-
-    setInvoiceNumber(String(json.invoiceNumber || "(Saved)"));
-    alert(`Invoice saved: ${json.invoiceNumber || ""}`);
-  } catch (err: any) {
-    alert(err?.message || "Failed to create invoice");
-  } finally {
-    setSaving(false);
+        return recalc({
+          ...r,
+          product_id: product.id,
+          item_code: product.item_code || product.sku || "",
+          description: (product.description || product.name || "").trim(),
+          units_per_box: Math.max(1, n2(product.units_per_box ?? 1)),
+          unit_price_excl_vat: n2(product.price_excl_vat ?? 0),
+          vat_rate: n2(product.vat_rate ?? 15) === 0 ? 0 : 15,
+          uom: "BOX",
+          box_qty: Math.max(1, Math.trunc(n2(r.box_qty) || 1)), // keep current qty if already typed
+        });
+      })
+    );
   }
-}
+
+  async function onSave() {
+    if (!customerId) return alert("Please select a customer.");
+    if (!invoiceDate) return alert("Please select invoice date.");
+    if (realLines.length === 0) return alert("Please add at least one item.");
+
+    setSaving(true);
+
+    try {
+      const payload = {
+        customerId,
+        invoiceDate,
+        purchaseOrderNo: purchaseOrderNo || null,
+        salesRep: salesRep || null,
+        salesRepPhone: salesRepPhone || null,
+        vatPercent: n2(vatPercent),
+        previousBalance: n2(previousBalance),
+        amountPaid: n2(amountPaid),
+        discountPercent: 0,
+
+        items: realLines.map((l) => {
+          const qty = Math.trunc(n2(l.box_qty));
+          if (qty <= 0) throw new Error("Qty must be at least 1 for all items.");
+
+          return {
+            product_id: l.product_id,
+            description: l.description || null,
+
+            uom: l.uom,
+
+            // 🔒 never NULL (DB constraint)
+            box_qty: qty,
+            pcs_qty: l.uom === "PCS" ? qty : null,
+
+            units_per_box: Math.trunc(n2(l.units_per_box)),
+            total_qty: Math.trunc(n2(l.total_qty)),
+
+            unit_price_excl_vat: n2(l.unit_price_excl_vat),
+            vat_rate: n2(l.vat_rate),
+            unit_vat: n2(l.unit_vat),
+            unit_price_incl_vat: n2(l.unit_price_incl_vat),
+            line_total: n2(l.line_total),
+          };
+        }),
+      };
+
+      const res = await rpFetch("/api/invoices/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to create invoice");
+
+      setInvoiceNumber(String(json.invoiceNumber || "(Saved)"));
+      alert(`Invoice saved: ${json.invoiceNumber || ""}`);
+    } catch (err: any) {
+      alert(err?.message || "Failed to create invoice");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function onPrint() {
     window.print();
@@ -387,7 +438,6 @@ export default function NewInvoiceClient() {
               <div className="inv-form-title">New VAT Invoice</div>
               <div className="inv-form-sub">A4 Print Template Locked (Ram Pottery)</div>
 
-              {/* ✅ Warning badge (screen only, print-hidden) */}
               {dupFromNo ? (
                 <div className="inv-dup-badge">
                   Duplicated from <b>{dupFromNo}</b>
@@ -435,12 +485,22 @@ export default function NewInvoiceClient() {
 
             <div className="inv-field">
               <label>Invoice Date</label>
-              <input className="inv-input" type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+              <input
+                className="inv-input"
+                type="date"
+                value={invoiceDate}
+                onChange={(e) => setInvoiceDate(e.target.value)}
+              />
             </div>
 
             <div className="inv-field">
               <label>Purchase Order No (optional)</label>
-              <input className="inv-input" value={purchaseOrderNo} onChange={(e) => setPurchaseOrderNo(e.target.value)} placeholder="Optional" />
+              <input
+                className="inv-input"
+                value={purchaseOrderNo}
+                onChange={(e) => setPurchaseOrderNo(e.target.value)}
+                placeholder="Optional"
+              />
             </div>
 
             <div className="inv-field">
@@ -455,7 +515,11 @@ export default function NewInvoiceClient() {
 
             <div className="inv-field">
               <label>VAT %</label>
-              <select className="inv-input" value={vatPercent} onChange={(e) => setVatPercent(n2(e.target.value) === 0 ? 0 : 15)}>
+              <select
+                className="inv-input"
+                value={vatPercent}
+                onChange={(e) => setVatPercent(n2(e.target.value) === 0 ? 0 : 15)}
+              >
                 <option value={15}>15%</option>
                 <option value={0}>0%</option>
               </select>
@@ -463,12 +527,26 @@ export default function NewInvoiceClient() {
 
             <div className="inv-field">
               <label>Previous Balance</label>
-              <input className="inv-input inv-input--right" value={previousBalance} onChange={(e) => setPreviousBalance(n2(e.target.value))} />
+              <input
+                className="inv-input inv-input--right"
+                value={previousBalance}
+                onChange={(e) => {
+                  setPrevTouched(true);
+                  setPreviousBalance(n2(e.target.value));
+                }}
+              />
             </div>
 
             <div className="inv-field">
               <label>Amount Paid</label>
-              <input className="inv-input inv-input--right" value={amountPaid} onChange={(e) => setAmountPaid(n2(e.target.value))} />
+              <input
+                className="inv-input inv-input--right"
+                value={amountPaid}
+                onChange={(e) => {
+                  setPaidTouched(true);
+                  setAmountPaid(n2(e.target.value));
+                }}
+              />
             </div>
           </div>
 
@@ -518,31 +596,7 @@ export default function NewInvoiceClient() {
                       onChange={(e) => {
                         const pid = e.target.value ? Number(e.target.value) : null;
                         const p = products.find((x) => x.id === pid) || null;
-
-                        if (!pid || !p) {
-                          setLine(r.id, {
-                            product_id: null,
-                            item_code: "",
-                            description: "",
-                            units_per_box: 1,
-                            unit_price_excl_vat: 0,
-                            vat_rate: 15,
-                            uom: "BOX",
-                            box_qty: 0,
-                          });
-                          return;
-                        }
-
-                        setLine(r.id, {
-                          product_id: pid,
-                          item_code: p.item_code || p.sku || "",
-                          description: (p.description || p.name || "").trim(),
-                          units_per_box: Math.max(1, n2(p.units_per_box ?? 1)),
-                          unit_price_excl_vat: n2(p.price_excl_vat ?? 0),
-                          vat_rate: n2(p.vat_rate ?? 15) === 0 ? 0 : 15,
-                          uom: "BOX",
-                          box_qty: 1,
-                        });
+                        applyProductToRow(r.id, p);
                       }}
                     >
                       <option value="">Select…</option>
@@ -555,12 +609,18 @@ export default function NewInvoiceClient() {
                   </div>
 
                   <div className="inv-boxcell">
-                    <select className="inv-input inv-input--uom" value={r.uom} onChange={(e) => setLine(r.id, { uom: e.target.value as any })}>
+                    <select
+                      className="inv-input inv-input--uom"
+                      value={r.uom}
+                      onChange={(e) => setLine(r.id, { uom: e.target.value as any })}
+                    >
                       <option value="BOX">BOX</option>
                       <option value="PCS">PCS</option>
                     </select>
+
                     <input
-                      className="inv-input inv-input--qty inv-input--center"
+                      className="inv-input inv-input--qty inv-input--qtywide inv-input--center"
+                      inputMode="numeric"
                       value={r.box_qty}
                       onChange={(e) => setLine(r.id, { box_qty: n2(e.target.value) })}
                     />
@@ -580,7 +640,11 @@ export default function NewInvoiceClient() {
                   </div>
 
                   <div>
-                    <input className="inv-input" value={r.description} onChange={(e) => setLine(r.id, { description: e.target.value })} />
+                    <input
+                      className="inv-input"
+                      value={r.description}
+                      onChange={(e) => setLine(r.id, { description: e.target.value })}
+                    />
                   </div>
 
                   <div>
@@ -592,7 +656,11 @@ export default function NewInvoiceClient() {
                   </div>
 
                   <div>
-                    <select className="inv-input inv-input--center" value={r.vat_rate} onChange={(e) => setLine(r.id, { vat_rate: n2(e.target.value) })}>
+                    <select
+                      className="inv-input inv-input--center"
+                      value={r.vat_rate}
+                      onChange={(e) => setLine(r.id, { vat_rate: n2(e.target.value) })}
+                    >
                       <option value={15}>15%</option>
                       <option value={0}>0%</option>
                     </select>
@@ -634,7 +702,7 @@ export default function NewInvoiceClient() {
           </div>
 
           <div className="inv-hint">
-            Print is locked to the official Ram Pottery A4 template. Page 2 appears <b>only</b> when real rows exceed page 1.
+            Print is locked to the official Ram Pottery A4 template. Page 2 appears only when real rows exceed page 1.
           </div>
         </div>
       </div>
