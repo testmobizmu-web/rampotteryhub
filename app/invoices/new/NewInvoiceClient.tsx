@@ -113,6 +113,13 @@ function canDuplicate(role?: string) {
   return r === "ADMIN" || r === "MANAGER";
 }
 
+function formatDDMMYYYY(v: any) {
+  const s = String(v || "").trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return s;
+}
+
 export default function NewInvoiceClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -147,6 +154,11 @@ export default function NewInvoiceClient() {
 
   // ✅ role guard for duplicate
   const [role, setRole] = useState<string>("");
+
+  // ✅ Product search modal (client request)
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchRowId, setSearchRowId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
 
   useEffect(() => {
     try {
@@ -248,10 +260,7 @@ export default function NewInvoiceClient() {
     };
   }, [duplicateId, role, router]);
 
-  const customer = useMemo(
-    () => customers.find((c) => c.id === customerId) || null,
-    [customers, customerId]
-  );
+  const customer = useMemo(() => customers.find((c) => c.id === customerId) || null, [customers, customerId]);
 
   // ✅ Put AFTER customer is defined (and uses touched guards)
   useEffect(() => {
@@ -325,6 +334,31 @@ export default function NewInvoiceClient() {
       })
     );
   }
+
+  function openSearchForRow(rowId: string) {
+    setSearchRowId(rowId);
+    setSearchTerm("");
+    setSearchOpen(true);
+  }
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchRowId(null);
+    setSearchTerm("");
+  }
+
+  const filteredProducts = useMemo(() => {
+    const t = searchTerm.trim().toLowerCase();
+    if (!t) return products;
+
+    return products.filter((p) => {
+      const code = String(p.item_code || "").toLowerCase();
+      const sku = String(p.sku || "").toLowerCase();
+      const name = String(p.name || "").toLowerCase();
+      const desc = String(p.description || "").toLowerCase();
+      return code.includes(t) || sku.includes(t) || name.includes(t) || desc.includes(t);
+    });
+  }, [products, searchTerm]);
 
   async function onSave() {
     if (!customerId) return alert("Please select a customer.");
@@ -409,6 +443,8 @@ export default function NewInvoiceClient() {
     }));
   }, [realLines]);
 
+  const invoiceDatePrint = formatDDMMYYYY(invoiceDate);
+
   return (
     <div className="inv-page">
       {/* Screen actions */}
@@ -485,12 +521,7 @@ export default function NewInvoiceClient() {
 
             <div className="inv-field">
               <label>Invoice Date</label>
-              <input
-                className="inv-input"
-                type="date"
-                value={invoiceDate}
-                onChange={(e) => setInvoiceDate(e.target.value)}
-              />
+              <input className="inv-input" type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
             </div>
 
             <div className="inv-field">
@@ -515,11 +546,7 @@ export default function NewInvoiceClient() {
 
             <div className="inv-field">
               <label>VAT %</label>
-              <select
-                className="inv-input"
-                value={vatPercent}
-                onChange={(e) => setVatPercent(n2(e.target.value) === 0 ? 0 : 15)}
-              >
+              <select className="inv-input" value={vatPercent} onChange={(e) => setVatPercent(n2(e.target.value) === 0 ? 0 : 15)}>
                 <option value={15}>15%</option>
                 <option value={0}>0%</option>
               </select>
@@ -589,7 +616,7 @@ export default function NewInvoiceClient() {
 
               {lines.map((r) => (
                 <div key={r.id} className="inv-items-tr">
-                  <div>
+                  <div className="inv-itemcode-cell">
                     <select
                       className="inv-input inv-input--tight"
                       value={r.product_id ?? ""}
@@ -606,14 +633,19 @@ export default function NewInvoiceClient() {
                         </option>
                       ))}
                     </select>
+
+                    {/* ✅ Client request: Search button below Item Code */}
+                    <button
+                      type="button"
+                      className="rp-btn rp-btn--ghost inv-search-btn"
+                      onClick={() => openSearchForRow(r.id)}
+                    >
+                      🔍 Search
+                    </button>
                   </div>
 
                   <div className="inv-boxcell">
-                    <select
-                      className="inv-input inv-input--uom"
-                      value={r.uom}
-                      onChange={(e) => setLine(r.id, { uom: e.target.value as any })}
-                    >
+                    <select className="inv-input inv-input--uom" value={r.uom} onChange={(e) => setLine(r.id, { uom: e.target.value as any })}>
                       <option value="BOX">BOX</option>
                       <option value="PCS">PCS</option>
                     </select>
@@ -640,11 +672,7 @@ export default function NewInvoiceClient() {
                   </div>
 
                   <div>
-                    <input
-                      className="inv-input"
-                      value={r.description}
-                      onChange={(e) => setLine(r.id, { description: e.target.value })}
-                    />
+                    <input className="inv-input" value={r.description} onChange={(e) => setLine(r.id, { description: e.target.value })} />
                   </div>
 
                   <div>
@@ -656,11 +684,7 @@ export default function NewInvoiceClient() {
                   </div>
 
                   <div>
-                    <select
-                      className="inv-input inv-input--center"
-                      value={r.vat_rate}
-                      onChange={(e) => setLine(r.id, { vat_rate: n2(e.target.value) })}
-                    >
+                    <select className="inv-input inv-input--center" value={r.vat_rate} onChange={(e) => setLine(r.id, { vat_rate: n2(e.target.value) })}>
                       <option value={15}>15%</option>
                       <option value={0}>0%</option>
                     </select>
@@ -707,6 +731,66 @@ export default function NewInvoiceClient() {
         </div>
       </div>
 
+      {/* ✅ Product search modal */}
+      {searchOpen ? (
+        <>
+          <div className="rp-modal-overlay" onClick={closeSearch} />
+          <div className="rp-modal" role="dialog" aria-modal="true">
+            <div className="rp-modal-head">
+              <div>
+                <div className="rp-modal-title">Search Product</div>
+                <div className="rp-modal-sub">Type item code / name to filter</div>
+              </div>
+              <button className="rp-iconBtn" onClick={closeSearch} aria-label="Close">
+                ✕
+              </button>
+            </div>
+
+            <div className="rp-modal-body">
+              <label className="rp-label">Search</label>
+              <input className="rp-input" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="e.g. 01, lamp, heart..." />
+
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 900, opacity: 0.7, fontSize: 12, marginBottom: 8 }}>
+                  Results: {filteredProducts.length}
+                </div>
+
+                <div className="rp-previewWrap" style={{ maxHeight: "46vh" }}>
+                  <div style={{ padding: 10, display: "grid", gap: 8 }}>
+                    {filteredProducts.map((p) => (
+                      <button
+                        key={p.id}
+                        className="rp-btn rp-btn--ghost"
+                        style={{ textAlign: "left", justifyContent: "flex-start" as any }}
+                        onClick={() => {
+                          const rowId = searchRowId;
+                          if (!rowId) return;
+                          applyProductToRow(rowId, p);
+                          closeSearch();
+                        }}
+                      >
+                        <b style={{ marginRight: 8 }}>{p.item_code || p.sku || "—"}</b>
+                        <span>{p.name || ""}</span>
+                      </button>
+                    ))}
+
+                    {filteredProducts.length === 0 ? (
+                      <div style={{ padding: 10, opacity: 0.75, fontWeight: 800 }}>No products found.</div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rp-modal-actions">
+                  <button className="rp-btn rp-btn--ghost" onClick={closeSearch}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
       {/* PRINT ONLY */}
       <div className="inv-printonly">
         <RamPotteryDoc
@@ -714,7 +798,7 @@ export default function NewInvoiceClient() {
           docNoLabel="INVOICE NO:"
           docNoValue={invoiceNumber}
           dateLabel="DATE:"
-          dateValue={invoiceDate}
+          dateValue={invoiceDatePrint}
           purchaseOrderLabel="PURCHASE ORDER NO:"
           purchaseOrderValue={purchaseOrderNo || ""}
           salesRepName={salesRep}

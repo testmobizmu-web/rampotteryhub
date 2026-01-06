@@ -116,7 +116,10 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
   const titleTop = "RAM POTTERY LTD";
   const subLine1 = "MANUFACTURER & IMPORTER OF QUALITY CLAY";
   const subLine2 = "PRODUCTS AND OTHER RELIGIOUS ITEMS";
-  const addrLine = "Robert Kennedy Street, Reunion Maurel, Petit Raffray - Mauritius";
+
+  // ✅ Force address into 2 lines exactly
+  const addrLine1 = "Robert Kennedy Street, Reunion Maurel,";
+  const addrLine2 = "Petit Raffray - Mauritius";
 
   const vatLabel = totals.vatPercentLabel || "VAT 15%";
 
@@ -133,15 +136,35 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
       <div className="rpdoc-page">
         {/* HEADER */}
         <div className="rpdoc-header">
-          <div className="rpdoc-logo">
-            <Image src="/images/logo/logo.png" alt="Ram Pottery Logo" width={140} height={140} priority />
+          <div className="rpdoc-logo rpdoc-logo--big">
+            {/* ✅ Bigger logo */}
+            <Image
+              src="/images/logo/logo.png"
+              alt="Ram Pottery Logo"
+              width={190}
+              height={190}
+              priority
+            />
           </div>
 
           <div className="rpdoc-head-center">
-            <div className="rpdoc-title">{titleTop}</div>
+            {/* ✅ Times New Roman ONLY for this title */}
+            <div
+              className="rpdoc-title"
+              style={{ fontFamily: '"Times New Roman", Times, serif' }}
+            >
+              {titleTop}
+            </div>
+
             <div className="rpdoc-sub">{subLine1}</div>
             <div className="rpdoc-sub">{subLine2}</div>
-            <div className="rpdoc-addr">{addrLine}</div>
+
+            {/* ✅ address forced into ~2 lines */}
+            <div className="rpdoc-addr">
+              {addrLine1}
+              <br />
+              {addrLine2}
+            </div>
 
             <div className="rpdoc-contacts">
               <span>
@@ -163,10 +186,7 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           <div className="rpdoc-logo-spacer" />
         </div>
 
-        {/* BIG RED BRN BAR */}
-        <div className="rpdoc-brnbar">
-          BRN: {brn} {brn || vatNo ? "|" : ""} VAT: {vatNo}
-        </div>
+        {/* ❌ REMOVED BIG RED BRN BAR (client request) */}
 
         {/* TOP BOXES */}
         <div className="rpdoc-topgrid">
@@ -177,23 +197,32 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
                 <span className="k">Name:</span>
                 <span className="v">{customer?.name || ""}</span>
               </div>
+
               <div className="rpdoc-row">
                 <span className="k">ADDRESS:</span>
                 <span className="v">{customer?.address || ""}</span>
               </div>
+
               <div className="rpdoc-row">
                 <span className="k">Tel:</span>
                 <span className="v">{customer?.phone || ""}</span>
               </div>
-              <div className="rpdoc-row rpdoc-row-split">
-                <span>
-                  <span className="k">BRN:</span> <span className="v">{customer?.brn || ""}</span>
+
+              {/* ✅ FIX alignment: VAT value shifts LEFT (not pushed far right) */}
+              <div className="rpdoc-row rpdoc-row-split rpdoc-row-split--left">
+                <span className="rpdoc-pair">
+                  <span className="k">BRN:</span>
+                  <span className="v">{customer?.brn || ""}</span>
                 </span>
-                <span>
-                  <span className="k">VAT No:</span> <span className="v">{customer?.vat_no || ""}</span>
+
+                <span className="rpdoc-pair">
+                  <span className="k">VAT No:</span>
+                  <span className="v">{customer?.vat_no || ""}</span>
                 </span>
               </div>
-              <div className="rpdoc-row">
+
+              {/* ✅ Customer code stays on same line, clean alignment */}
+              <div className="rpdoc-row rpdoc-row-grid">
                 <span className="k">CUSTOMER CODE:</span>
                 <span className="v">{customer?.customer_code || ""}</span>
               </div>
@@ -204,15 +233,18 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             <div className="rpdoc-box-title rpdoc-box-title-center">
               BRN: {brn} {brn || vatNo ? "|" : ""} VAT:{vatNo}
             </div>
+
             <div className="rpdoc-box-body">
               <div className="rpdoc-row">
                 <span className="k">{docNoLabel}</span>
                 <span className="v">{docNoValue}</span>
               </div>
+
               <div className="rpdoc-row">
                 <span className="k">{dateLabel}</span>
                 <span className="v">{dateValue}</span>
               </div>
+
               <div className="rpdoc-row">
                 <span className="k">{purchaseOrderLabel}</span>
                 <span className="v">{purchaseOrderValue || ""}</span>
@@ -222,6 +254,7 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
                 <span>
                   <span className="k">SALES REP:</span> <span className="v">{repName}</span>
                 </span>
+
                 <span>
                   {repPhone ? (
                     <>
@@ -236,7 +269,7 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           </div>
         </div>
 
-        {/* ✅ ITEMS TABLE (true table => header repeats on page 2) */}
+        {/* ✅ ITEMS TABLE */}
         <table className="rpdoc-table2">
           <thead className="rpdoc-thead2">
             <tr>
@@ -367,7 +400,7 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
         <div className="rpdoc-footerbar">{footerThanksText}</div>
       </div>
 
-      {/* ✅ Print-lock rules injected globally (so header repeats + no row splitting) */}
+      {/* ✅ Print-lock rules + small component-level alignment helpers */}
       <style jsx global>{`
         @page {
           size: A4 portrait;
@@ -397,6 +430,33 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           .rpdoc-wrap {
             background: transparent !important;
           }
+
+          /* ✅ slightly bigger logo on print as well */
+          .rpdoc-logo--big img {
+            width: 56mm !important;
+            height: auto !important;
+          }
+        }
+
+        /* ✅ Customer BRN/VAT: keep values left, not pushed out */
+        .rpdoc-row-split--left {
+          display: flex;
+          justify-content: flex-start;
+          gap: 18px;
+          flex-wrap: wrap;
+        }
+        .rpdoc-row-split--left .rpdoc-pair {
+          display: inline-flex;
+          gap: 6px;
+          align-items: baseline;
+        }
+
+        /* ✅ Customer code row: label + value in a stable grid */
+        .rpdoc-row-grid {
+          display: grid;
+          grid-template-columns: 42mm 1fr;
+          gap: 6px;
+          align-items: baseline;
         }
       `}</style>
     </div>

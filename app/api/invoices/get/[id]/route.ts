@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getUserFromHeader } from "@/lib/payments";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function supaAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -21,26 +22,19 @@ function isNumericId(s: string) {
   return /^[0-9]+$/.test(s);
 }
 
-export async function GET(
-  req: NextRequest,
-  context: { params: Promise<{ id: string }> }
-) {
+export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
     const user = getUserFromHeader(req.headers.get("x-rp-user"));
-    if (!user) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-    }
+    if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
     const { id } = await context.params;
     const raw = String(id || "").trim();
-    if (!raw) {
-      return NextResponse.json({ ok: false, error: "Missing id" }, { status: 400 });
-    }
+    if (!raw) return NextResponse.json({ ok: false, error: "Missing id" }, { status: 400 });
 
     const supabase = supaAdmin();
     const numeric = isNumericId(raw);
 
-    // ✅ Build query FIRST
+    // 1) Invoice
     let invQ = supabase
       .from("invoices")
       .select(`
@@ -48,13 +42,28 @@ export async function GET(
         invoice_number,
         invoice_date,
         customer_id,
+
+        purchase_order_no,
+        sales_rep,
+        sales_rep_phone,
+
         subtotal,
+        vat_percent,
         vat_amount,
         total_amount,
-        status,
-        created_at,
+
+        previous_balance,
+        gross_total,
+
         amount_paid,
         balance_remaining,
+
+        discount_percent,
+        discount_amount,
+
+        status,
+        created_at,
+
         customers:customer_id (
           id,
           name,
@@ -66,36 +75,34 @@ export async function GET(
         )
       `);
 
-    // ✅ Apply filter BEFORE maybeSingle()
-    invQ = numeric
-      ? invQ.eq("id", Number(raw))
-      : invQ.eq("invoice_number", raw);
+    invQ = numeric ? invQ.eq("id", Number(raw)) : invQ.eq("invoice_number", raw);
 
-    // ✅ Finalize
     const { data: invoice, error: invErr } = await invQ.maybeSingle();
+    if (invErr) return NextResponse.json({ ok: false, error: invErr.message }, { status: 500 });
+    if (!invoice) return NextResponse.json({ ok: false, error: "Invoice not found" }, { status: 404 });
 
-    if (invErr) {
-      return NextResponse.json({ ok: false, error: invErr.message }, { status: 500 });
-    }
-
-    if (!invoice) {
-      return NextResponse.json({ ok: false, error: "Invoice not found" }, { status: 404 });
-    }
-
-    // ✅ Always use REAL numeric invoice.id
-    const invId = invoice.id;
-
+    // 2) Items
     const { data: items, error: itErr } = await supabase
       .from("invoice_items")
       .select(`
         id,
+        invoice_id,
         product_id,
+
+        uom,
         box_qty,
+        pcs_qty,
+        units_per_box,
         total_qty,
+
         unit_price_excl_vat,
         unit_vat,
         unit_price_incl_vat,
         line_total,
+
+        description,
+        vat_rate,
+
         products:product_id (
           id,
           item_code,
@@ -103,23 +110,13 @@ export async function GET(
           name
         )
       `)
-      .eq("invoice_id", invId)
+      .eq("invoice_id", invoice.id)
       .order("id", { ascending: true });
 
-    if (itErr) {
-      return NextResponse.json({ ok: false, error: itErr.message }, { status: 500 });
-    }
+    if (itErr) return NextResponse.json({ ok: false, error: itErr.message }, { status: 500 });
 
-    return NextResponse.json({
-      ok: true,
-      invoice,
-      items: items || [],
-    });
+    return NextResponse.json({ ok: true, invoice, items: items || [] });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
   }
 }
-

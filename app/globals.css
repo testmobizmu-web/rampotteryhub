@@ -2755,3 +2755,72 @@ html[data-theme="dark"] .rp-chart-label{color:rgba(255,255,255,.7)}
   border-top: 2px solid #000;
   padding-top: 6px;
 }
+
+/* ============================================================
+   CLIENT PRINT CHANGES — RamPotteryDoc (OVERRIDES)
+   Paste at END of globals.css
+   ============================================================ */
+
+/* 1) Bigger logo on print template */
+.rpdoc-logo img{
+  width: 56mm !important;
+  height: auto !important;
+}
+
+/* 2) "RAM POTTERY LTD" in Times New Roman ONLY */
+.rpdoc-title{
+  font-family: "Times New Roman", Times, serif !important;
+}
+
+/* 3) Address should naturally wrap into ~2 lines */
+.rpdoc-addr{
+  max-width: 92mm;
+  margin-left: auto;
+  margin-right: auto;
+  line-height: 1.25;
+  white-space: normal;
+  word-break: normal;
+}
+
+/* 4) Remove the red BRN/VAT bar */
+.rpdoc-brnbar{
+  display: none !important;
+}
+
+/* 5) Customer box alignment fixes:
+      - Customer Code value stays on same line
+      - VAT NO value shifts left (not pushed to far right)
+   Apply ONLY to the FIRST box (customer details) */
+.rpdoc-topgrid .rpdoc-box:first-child .rpdoc-row{
+  display: grid !important;
+  grid-template-columns: 38mm 1fr !important;
+  justify-content: start !important;
+  align-items: baseline !important;
+  gap: 6px !important;
+}
+.rpdoc-topgrid .rpdoc-box:first-child .rpdoc-row .v{
+  text-align: left !important;
+}
+
+/* 6) Reduce invoice table line thickness (header + body) */
+.rpdoc-table2{
+  border: 1px solid #111 !important;
+}
+.rpdoc-thead2 th{
+  border: 1px solid #111 !important;
+}
+.rpdoc-tbody2 td{
+  border: 1px solid #111 !important;
+}
+
+/* 7) New Invoice page: Item Code cell layout + search button styling */
+.inv-itemcode-cell{
+  display: grid;
+  gap: 6px;
+}
+.inv-search-btn{
+  padding: 7px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 900;
+}
