@@ -26,6 +26,12 @@ type RawInvoiceItem = {
   vat_rate?: number | string;
   vatRate?: number | string;
 
+  unit_vat?: number | string;
+  unitVat?: number | string;
+
+  unit_price_incl_vat?: number | string;
+  unitPriceInclVat?: number | string;
+
   line_total?: number | string;
 
   description?: string | null;
@@ -42,7 +48,7 @@ type NormalizedItem = {
   total_qty: number; // integer
 
   unit_price_excl_vat: number;
-  vat_rate: number; // %
+  vat_rate: number; // % (0 or 15)
   unit_vat: number;
   unit_price_incl_vat: number;
   line_total: number;
@@ -62,19 +68,15 @@ function supaAdmin() {
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !service) {
-    throw new Error(
-      "Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY"
-    );
+    throw new Error("Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY");
   }
-  return createClient(url, service);
+  return createClient(url, service, { auth: { persistSession: false } });
 }
 
 export async function POST(req: NextRequest) {
   try {
     const user = getUserFromHeader(req.headers.get("x-rp-user"));
-    if (!user) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-    }
+    if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
     const body: any = await req.json().catch(() => ({}));
 
@@ -88,20 +90,18 @@ export async function POST(req: NextRequest) {
     const previousBalance = n2(body.previousBalance ?? body.previous_balance ?? 0);
     const amountPaid = n2(body.amountPaid ?? body.amount_paid ?? 0);
 
-    const items: RawInvoiceItem[] = (Array.isArray(body.items) ? body.items : []) as RawInvoiceItem[];
+    // ✅ discount percent comes from UI
+    const discountPercentRaw = n2(body.discountPercent ?? body.discount_percent ?? 0);
+    const discountPercent = clamp(discountPercentRaw, 0, 100);
+
+    const items: RawInvoiceItem[] = Array.isArray(body.items) ? (body.items as RawInvoiceItem[]) : [];
     if (!customerId || !invoiceDate || items.length === 0) {
-      return NextResponse.json(
-        { ok: false, error: "Missing required invoice data." },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Missing required invoice data." }, { status: 400 });
     }
 
     const supabase = supaAdmin();
 
-    // Normalize items:
-    // - uom: BOX or PCS
-    // - if PCS: store pcs_qty, box_qty = null, units_per_box = 1, total_qty = pcs_qty
-    // - if BOX: store box_qty, pcs_qty = null, units_per_box required, total_qty = box_qty * units_per_box
+    // Normalize items
     const normalizedItems: NormalizedItem[] = items.map((it, idx) => {
       const pid = Number(it.product_id ?? it.productId);
       if (!Number.isFinite(pid)) throw new Error(`Item #${idx + 1}: Missing product_id`);
@@ -111,23 +111,21 @@ export async function POST(req: NextRequest) {
       const boxQtyRaw = n2(it.box_qty ?? it.boxQty ?? 0);
       const pcsQtyRaw = n2(it.pcs_qty ?? it.pcsQty ?? 0);
 
-      // qty is integer count of selected UOM
-      const qty =
-        uom === "PCS" ? Math.trunc(pcsQtyRaw || boxQtyRaw) : Math.trunc(boxQtyRaw);
+      const qty = uom === "PCS" ? Math.trunc(pcsQtyRaw || boxQtyRaw) : Math.trunc(boxQtyRaw);
+      if (qty <= 0) throw new Error(`Item #${idx + 1}: Qty must be at least 1`);
 
-      const upb =
-        uom === "PCS"
-          ? 1
-          : Math.max(1, Math.trunc(n2(it.units_per_box ?? it.unitsPerBox ?? 1)));
-
+      const upb = uom === "PCS" ? 1 : Math.max(1, Math.trunc(n2(it.units_per_box ?? it.unitsPerBox ?? 1)));
       const totalQty = uom === "PCS" ? qty : qty * upb;
 
       const unitEx = n2(it.unit_price_excl_vat ?? it.unitPriceExclVat ?? 0);
-      const vatPercent = clamp(n2(it.vat_rate ?? it.vatRate ?? 15), 0, 100);
-      const unitVat = unitEx * (vatPercent / 100);
-      const unitIncl = unitEx + unitVat;
+      const vatPercentLine = n2(it.vat_rate ?? it.vatRate ?? 15) === 0 ? 0 : 15;
 
-      const lineTotal = n2(it.line_total ?? unitIncl * totalQty);
+      // compute VAT if not provided
+      const unitVat = it.unit_vat != null || it.unitVat != null ? n2(it.unit_vat ?? it.unitVat) : unitEx * (vatPercentLine / 100);
+      const unitIncl =
+        it.unit_price_incl_vat != null || it.unitPriceInclVat != null ? n2(it.unit_price_incl_vat ?? it.unitPriceInclVat) : unitEx + unitVat;
+
+      const lineTotal = it.line_total != null ? n2(it.line_total) : unitIncl * totalQty;
 
       return {
         product_id: pid,
@@ -140,26 +138,21 @@ export async function POST(req: NextRequest) {
         total_qty: totalQty,
 
         unit_price_excl_vat: unitEx,
-        vat_rate: vatPercent,
+        vat_rate: vatPercentLine,
         unit_vat: unitVat,
         unit_price_incl_vat: unitIncl,
         line_total: lineTotal,
       };
     });
 
-    // Totals (NO generic type args; typed accumulator)
-    const subtotal = normalizedItems.reduce(
-      (sum: number, it: NormalizedItem) =>
-        sum + n2(it.total_qty) * n2(it.unit_price_excl_vat),
-      0
-    );
+    // Totals (per line VAT)
+    const subtotalEx = normalizedItems.reduce((sum, it) => sum + n2(it.total_qty) * n2(it.unit_price_excl_vat), 0);
+    const vatAmount = normalizedItems.reduce((sum, it) => sum + n2(it.total_qty) * n2(it.unit_vat), 0);
+    const totalBeforeDiscount = subtotalEx + vatAmount;
 
-    const vatAmount = normalizedItems.reduce(
-      (sum: number, it: NormalizedItem) => sum + n2(it.total_qty) * n2(it.unit_vat),
-      0
-    );
-
-    const totalAmount = subtotal + vatAmount;
+    // ✅ Discount applied on TOTAL after VAT
+    const discountAmount = totalBeforeDiscount * (discountPercent / 100);
+    const totalAmount = Math.max(0, totalBeforeDiscount - discountAmount);
 
     const grossTotal = totalAmount + previousBalance;
     const balanceRemaining = Math.max(0, grossTotal - amountPaid);
@@ -176,13 +169,14 @@ export async function POST(req: NextRequest) {
         sales_rep: salesRep,
         sales_rep_phone: salesRepPhone,
 
-        subtotal,
-        vat_percent: null, // per-line vat is stored in items
+        // ✅ store EX + VAT (before discount) + Total after discount
+        subtotal: subtotalEx,
+        vat_percent: null, // per-line
         vat_amount: vatAmount,
         total_amount: totalAmount,
 
-        total_excl_vat: subtotal,
-        total_incl_vat: totalAmount,
+        total_excl_vat: subtotalEx,
+        total_incl_vat: totalBeforeDiscount,
         gross_total: grossTotal,
 
         previous_balance: previousBalance,
@@ -190,8 +184,8 @@ export async function POST(req: NextRequest) {
         balance_remaining: balanceRemaining,
         balance_due: balanceRemaining,
 
-        discount_percent: 0,
-        discount_amount: 0,
+        discount_percent: discountPercent,
+        discount_amount: discountAmount,
 
         status: "ISSUED",
       })
@@ -208,32 +202,22 @@ export async function POST(req: NextRequest) {
       ...it,
     }));
 
-    const { error: itemsError } = await supabase
-      .from("invoice_items")
-      .insert(itemsToInsert);
+    const { error: itemsError } = await supabase.from("invoice_items").insert(itemsToInsert);
 
     if (itemsError) {
       await supabase.from("invoices").delete().eq("id", invoiceId);
       throw itemsError;
     }
 
-    // STOCK UPDATE:
-    // - decrement products.current_stock by total_qty per item
-    // - best effort insert stock_movements (if table exists)
+    // STOCK UPDATE (unchanged)
     for (const it of normalizedItems) {
       const pid = it.product_id;
       const qty = Math.trunc(n2(it.total_qty));
-
       if (qty <= 0) continue;
 
-      const { data: pRow, error: pErr } = await supabase
-        .from("products")
-        .select("id, current_stock")
-        .eq("id", pid)
-        .single();
+      const { data: pRow, error: pErr } = await supabase.from("products").select("id, current_stock").eq("id", pid).single();
 
       if (pErr || !pRow) {
-        // rollback invoice to prevent inconsistent state
         await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
         await supabase.from("invoices").delete().eq("id", invoiceId);
         throw new Error(`Stock update failed (product ${pid} not found)`);
@@ -242,10 +226,7 @@ export async function POST(req: NextRequest) {
       const current = Math.trunc(n2(pRow.current_stock));
       const next = Math.max(0, current - qty);
 
-      const { error: upErr } = await supabase
-        .from("products")
-        .update({ current_stock: next })
-        .eq("id", pid);
+      const { error: upErr } = await supabase.from("products").update({ current_stock: next }).eq("id", pid);
 
       if (upErr) {
         await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
@@ -253,7 +234,7 @@ export async function POST(req: NextRequest) {
         throw new Error(`Stock update failed (product ${pid})`);
       }
 
-      // optional movement log (ignore if table missing)
+      // optional movement log
       try {
         await supabase.from("stock_movements").insert({
           product_id: pid,
@@ -275,9 +256,6 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: any) {
     console.error("Create invoice error:", err);
-    return NextResponse.json(
-      { ok: false, error: err?.message || "Failed to create invoice" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: err?.message || "Failed to create invoice" }, { status: 500 });
   }
 }

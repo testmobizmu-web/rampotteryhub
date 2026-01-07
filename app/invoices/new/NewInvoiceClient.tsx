@@ -14,6 +14,7 @@ type CustomerRow = {
   vat_no: string;
   customer_code: string;
   opening_balance?: number | null;
+  discount_percent?: number | null; // ✅ party-wise discount
 };
 
 type ProductRow = {
@@ -44,7 +45,7 @@ type InvoiceLine = {
   unit_price_excl_vat: number;
   unit_vat: number;
   unit_price_incl_vat: number;
-  line_total: number;
+  line_total: number; // total_qty * unit_inc
 };
 
 function n2(v: any) {
@@ -140,22 +141,27 @@ export default function NewInvoiceClient() {
   const [previousBalance, setPreviousBalance] = useState<number>(0);
   const [amountPaid, setAmountPaid] = useState<number>(0);
 
-  // ✅ MUST be here (before any useEffect/useMemo below)
+  // ✅ touched guards
   const [prevTouched, setPrevTouched] = useState(false);
   const [paidTouched, setPaidTouched] = useState(false);
 
+  // ✅ party-wise discount
+  const [discountPercent, setDiscountPercent] = useState<number>(0);
+  const [discountTouched, setDiscountTouched] = useState(false);
+
+  // VAT selector: applies to all lines
   const [vatPercent, setVatPercent] = useState<number>(15);
 
   const [invoiceNumber, setInvoiceNumber] = useState<string>("(Auto when saved)");
   const [lines, setLines] = useState<InvoiceLine[]>([]);
 
-  // ✅ screen-only duplication badge
+  // screen-only duplication badge
   const [dupFromNo, setDupFromNo] = useState<string | null>(null);
 
-  // ✅ role guard for duplicate
+  // role guard for duplicate
   const [role, setRole] = useState<string>("");
 
-  // ✅ Product search modal (client request)
+  // Product search modal
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchRowId, setSearchRowId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -197,6 +203,29 @@ export default function NewInvoiceClient() {
     };
   }, []);
 
+  // ✅ customer lookup (must exist BEFORE effects that use it)
+  const customer = useMemo(() => customers.find((c) => c.id === customerId) || null, [customers, customerId]);
+
+  // ✅ party-wise auto-fill (previous balance + paid + discount)
+  useEffect(() => {
+    if (!customerId) return;
+
+    if (!prevTouched) {
+      const ob = n2(customer?.opening_balance ?? 0);
+      setPreviousBalance(ob);
+    }
+
+    if (!paidTouched) {
+      setAmountPaid(0);
+    }
+
+    if (!discountTouched) {
+      const dp = n2(customer?.discount_percent ?? 0);
+      setDiscountPercent(dp);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId, customer?.opening_balance, customer?.discount_percent, prevTouched, paidTouched, discountTouched]);
+
   // ✅ DUPLICATE PREFILL + ROLE LOCK + WARNING BADGE
   useEffect(() => {
     if (!duplicateId) return;
@@ -224,12 +253,21 @@ export default function NewInvoiceClient() {
         setPurchaseOrderNo(inv.purchase_order_no || "");
         setSalesRep(inv.sales_rep || "Mr Koushal");
         setSalesRepPhone(inv.sales_rep_phone || "");
-        setVatPercent(inv.vat_percent ?? 15);
 
+        // keep invoice discount if present (duplicate should match original)
+        const invDp = n2(inv.discount_percent ?? 0);
+        setDiscountPercent(invDp);
+        setDiscountTouched(true);
+
+        // reset balances for duplicated invoice
         setPreviousBalance(0);
         setAmountPaid(0);
         setPrevTouched(false);
         setPaidTouched(false);
+
+        // VAT mode: if invoice stored vat_percent, apply to all lines; else keep 15
+        const invVat = n2(inv.vat_percent ?? 15) === 0 ? 0 : 15;
+        setVatPercent(invVat);
 
         const cloned = items.map((it: any) =>
           recalc({
@@ -241,7 +279,7 @@ export default function NewInvoiceClient() {
             box_qty: it.box_qty || 0,
             units_per_box: it.units_per_box || 1,
             total_qty: it.total_qty || 0,
-            vat_rate: it.unit_vat > 0 ? 15 : 0,
+            vat_rate: n2(it.vat_rate ?? (it.unit_vat > 0 ? 15 : 0)) === 0 ? 0 : 15,
             unit_price_excl_vat: it.unit_price_excl_vat || 0,
             unit_vat: it.unit_vat || 0,
             unit_price_incl_vat: it.unit_price_incl_vat || 0,
@@ -260,31 +298,28 @@ export default function NewInvoiceClient() {
     };
   }, [duplicateId, role, router]);
 
-  const customer = useMemo(() => customers.find((c) => c.id === customerId) || null, [customers, customerId]);
-
-  // ✅ Put AFTER customer is defined (and uses touched guards)
-  useEffect(() => {
-    if (!customerId) return;
-
-    if (!prevTouched) {
-      const ob = n2(customer?.opening_balance ?? 0);
-      setPreviousBalance(ob);
-    }
-
-    if (!paidTouched) {
-      setAmountPaid(0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customerId, customer?.opening_balance, prevTouched, paidTouched]);
-
   const realLines = useMemo(() => lines.filter((l) => !!l.product_id), [lines]);
 
-  const subtotal = useMemo(() => {
+  // ✅ totals (Discount applied on TOTAL after VAT)
+  const subtotalEx = useMemo(() => {
     return realLines.reduce((sum, r) => sum + n2(r.total_qty) * n2(r.unit_price_excl_vat), 0);
   }, [realLines]);
 
-  const vatAmount = useMemo(() => subtotal * (n2(vatPercent) / 100), [subtotal, vatPercent]);
-  const totalAmount = useMemo(() => subtotal + vatAmount, [subtotal, vatAmount]);
+  const vatAmount = useMemo(() => {
+    return realLines.reduce((sum, r) => sum + n2(r.total_qty) * n2(r.unit_vat), 0);
+  }, [realLines]);
+
+  const totalBeforeDiscount = useMemo(() => subtotalEx + vatAmount, [subtotalEx, vatAmount]);
+
+  const discountAmount = useMemo(() => {
+    const dp = Math.max(0, Math.min(100, n2(discountPercent)));
+    return totalBeforeDiscount * (dp / 100);
+  }, [totalBeforeDiscount, discountPercent]);
+
+  const totalAmount = useMemo(() => {
+    return Math.max(0, totalBeforeDiscount - discountAmount);
+  }, [totalBeforeDiscount, discountAmount]);
+
   const grossTotal = useMemo(() => totalAmount + n2(previousBalance), [totalAmount, previousBalance]);
   const balanceRemaining = useMemo(() => Math.max(0, grossTotal - n2(amountPaid)), [grossTotal, amountPaid]);
 
@@ -300,7 +335,7 @@ export default function NewInvoiceClient() {
     setLines((prev) => (prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)));
   }
 
-  // ✅ Atomic product apply: ensures Unit Ex/Inc/LineTotal refresh immediately
+  // ✅ Atomic product apply
   function applyProductToRow(rowId: string, product: ProductRow | null) {
     setLines((prev) =>
       prev.map((r) => {
@@ -314,7 +349,7 @@ export default function NewInvoiceClient() {
             description: "",
             units_per_box: 1,
             unit_price_excl_vat: 0,
-            vat_rate: 15,
+            vat_rate: vatPercent === 0 ? 0 : 15,
             uom: "BOX",
             box_qty: 0,
           });
@@ -327,9 +362,9 @@ export default function NewInvoiceClient() {
           description: (product.description || product.name || "").trim(),
           units_per_box: Math.max(1, n2(product.units_per_box ?? 1)),
           unit_price_excl_vat: n2(product.price_excl_vat ?? 0),
-          vat_rate: n2(product.vat_rate ?? 15) === 0 ? 0 : 15,
+          vat_rate: vatPercent === 0 ? 0 : 15, // follow top VAT selector
           uom: "BOX",
-          box_qty: Math.max(1, Math.trunc(n2(r.box_qty) || 1)), // keep current qty if already typed
+          box_qty: Math.max(1, Math.trunc(n2(r.box_qty) || 1)),
         });
       })
     );
@@ -374,10 +409,13 @@ export default function NewInvoiceClient() {
         purchaseOrderNo: purchaseOrderNo || null,
         salesRep: salesRep || null,
         salesRepPhone: salesRepPhone || null,
-        vatPercent: n2(vatPercent),
+
         previousBalance: n2(previousBalance),
         amountPaid: n2(amountPaid),
-        discountPercent: 0,
+
+        // ✅ discount on TOTAL after VAT
+        discountPercent: n2(discountPercent),
+        discountAmount: n2(discountAmount),
 
         items: realLines.map((l) => {
           const qty = Math.trunc(n2(l.box_qty));
@@ -389,7 +427,6 @@ export default function NewInvoiceClient() {
 
             uom: l.uom,
 
-            // 🔒 never NULL (DB constraint)
             box_qty: qty,
             pcs_qty: l.uom === "PCS" ? qty : null,
 
@@ -499,7 +536,10 @@ export default function NewInvoiceClient() {
               <select
                 className="inv-input"
                 value={customerId ?? ""}
-                onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
+                onChange={(e) => {
+                  setDiscountTouched(false); // ✅ allow auto-fill from party
+                  setCustomerId(e.target.value ? Number(e.target.value) : null);
+                }}
               >
                 <option value="">Select…</option>
                 {customers.map((c) => (
@@ -526,12 +566,7 @@ export default function NewInvoiceClient() {
 
             <div className="inv-field">
               <label>Purchase Order No (optional)</label>
-              <input
-                className="inv-input"
-                value={purchaseOrderNo}
-                onChange={(e) => setPurchaseOrderNo(e.target.value)}
-                placeholder="Optional"
-              />
+              <input className="inv-input" value={purchaseOrderNo} onChange={(e) => setPurchaseOrderNo(e.target.value)} placeholder="Optional" />
             </div>
 
             <div className="inv-field">
@@ -545,11 +580,42 @@ export default function NewInvoiceClient() {
             </div>
 
             <div className="inv-field">
-              <label>VAT %</label>
-              <select className="inv-input" value={vatPercent} onChange={(e) => setVatPercent(n2(e.target.value) === 0 ? 0 : 15)}>
+              <label>VAT % (applies to all items)</label>
+              <select
+                className="inv-input"
+                value={vatPercent}
+                onChange={(e) => {
+                  const next = n2(e.target.value) === 0 ? 0 : 15;
+                  setVatPercent(next);
+                  setLines((prev) => prev.map((r) => recalc({ ...r, vat_rate: next } as InvoiceLine)));
+                }}
+              >
                 <option value={15}>15%</option>
                 <option value={0}>0%</option>
               </select>
+            </div>
+
+            <div className="inv-field">
+              <label>Discount % (Party-wise)</label>
+              <input
+                className="inv-input inv-input--right"
+                inputMode="numeric"
+                value={discountPercent}
+                onChange={(e) => {
+                  setDiscountTouched(true);
+                  setDiscountPercent(n2(e.target.value));
+                }}
+                placeholder="0"
+              />
+              <div className="inv-help">
+                {customer ? (
+                  <span>
+                    Default for <b>{customer.name}</b> = {n2(customer.discount_percent ?? 0)}%
+                  </span>
+                ) : (
+                  <span>Auto-fills when you select a customer</span>
+                )}
+              </div>
             </div>
 
             <div className="inv-field">
@@ -586,12 +652,16 @@ export default function NewInvoiceClient() {
 
               <div className="inv-items-totals">
                 <div className="inv-pill">
-                  <span className="k">Sub</span>
-                  <span className="v">Rs {money(subtotal)}</span>
+                  <span className="k">Sub (Ex)</span>
+                  <span className="v">Rs {money(subtotalEx)}</span>
                 </div>
                 <div className="inv-pill">
                   <span className="k">VAT</span>
                   <span className="v">Rs {money(vatAmount)}</span>
+                </div>
+                <div className="inv-pill">
+                  <span className="k">Disc</span>
+                  <span className="v">- Rs {money(discountAmount)}</span>
                 </div>
                 <div className="inv-pill inv-pill--strong">
                   <span className="k">Total</span>
@@ -634,12 +704,7 @@ export default function NewInvoiceClient() {
                       ))}
                     </select>
 
-                    {/* ✅ Client request: Search button below Item Code */}
-                    <button
-                      type="button"
-                      className="rp-btn rp-btn--ghost inv-search-btn"
-                      onClick={() => openSearchForRow(r.id)}
-                    >
+                    <button type="button" className="rp-btn rp-btn--ghost inv-search-btn" onClick={() => openSearchForRow(r.id)}>
                       🔍 Search
                     </button>
                   </div>
@@ -725,13 +790,11 @@ export default function NewInvoiceClient() {
             </div>
           </div>
 
-          <div className="inv-hint">
-            Print is locked to the official Ram Pottery A4 template. Page 2 appears only when real rows exceed page 1.
-          </div>
+          <div className="inv-hint">Print is locked to the official Ram Pottery A4 template. Page 2 appears only when real rows exceed page 1.</div>
         </div>
       </div>
 
-      {/* ✅ Product search modal */}
+      {/* Product search modal */}
       {searchOpen ? (
         <>
           <div className="rp-modal-overlay" onClick={closeSearch} />
@@ -751,9 +814,7 @@ export default function NewInvoiceClient() {
               <input className="rp-input" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="e.g. 01, lamp, heart..." />
 
               <div style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 900, opacity: 0.7, fontSize: 12, marginBottom: 8 }}>
-                  Results: {filteredProducts.length}
-                </div>
+                <div style={{ fontWeight: 900, opacity: 0.7, fontSize: 12, marginBottom: 8 }}>Results: {filteredProducts.length}</div>
 
                 <div className="rp-previewWrap" style={{ maxHeight: "46vh" }}>
                   <div style={{ padding: 10, display: "grid", gap: 8 }}>
@@ -774,9 +835,7 @@ export default function NewInvoiceClient() {
                       </button>
                     ))}
 
-                    {filteredProducts.length === 0 ? (
-                      <div style={{ padding: 10, opacity: 0.75, fontWeight: 800 }}>No products found.</div>
-                    ) : null}
+                    {filteredProducts.length === 0 ? <div style={{ padding: 10, opacity: 0.75, fontWeight: 800 }}>No products found.</div> : null}
                   </div>
                 </div>
 
@@ -817,8 +876,8 @@ export default function NewInvoiceClient() {
           }}
           items={docItems}
           totals={{
-            subtotal,
-            vatPercentLabel: `VAT ${vatPercent}%`,
+            subtotal: subtotalEx,
+            vatPercentLabel: `VAT`,
             vat_amount: vatAmount,
             total_amount: totalAmount,
             previous_balance: previousBalance,

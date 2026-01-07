@@ -26,6 +26,7 @@ type Totals = {
   amount_paid?: number | null;
   balance_remaining?: number | null;
 
+  // ✅ snapshot values stored in invoice (audit-proof)
   discount_percent?: number | null;
   discount_amount?: number | null;
 };
@@ -87,10 +88,6 @@ function uomLabel(u: any) {
 
 /**
  * LOCKED A4 PRINT TEMPLATE
- * - No filler rows (never forces extra page)
- * - Real <table> with repeating header on page breaks
- * - Avoid row splitting across pages
- * - UOM display: BOX shows qty only; PCS shows "PCS {qty}"
  */
 export default function RamPotteryDoc(props: RamPotteryDocProps) {
   const {
@@ -117,7 +114,6 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
   const subLine1 = "MANUFACTURER & IMPORTER OF QUALITY CLAY";
   const subLine2 = "PRODUCTS AND OTHER RELIGIOUS ITEMS";
 
-  // ✅ Force address into 2 lines exactly
   const addrLine1 = "Robert Kennedy Street, Reunion Maurel,";
   const addrLine2 = "Petit Raffray - Mauritius";
 
@@ -131,13 +127,15 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
 
   const gross = Number(totals.total_amount || 0) + Number(totals.previous_balance || 0);
 
+  const hasDiscount =
+    Number(totals.discount_amount || 0) > 0 || Number(totals.discount_percent || 0) > 0;
+
   return (
     <div className="rpdoc-wrap">
       <div className="rpdoc-page">
         {/* HEADER */}
         <div className="rpdoc-header">
           <div className="rpdoc-logo rpdoc-logo--big">
-            {/* ✅ Bigger logo */}
             <Image
               src="/images/logo/logo.png"
               alt="Ram Pottery Logo"
@@ -148,7 +146,6 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           </div>
 
           <div className="rpdoc-head-center">
-            {/* ✅ Times New Roman ONLY for this title */}
             <div
               className="rpdoc-title"
               style={{ fontFamily: '"Times New Roman", Times, serif' }}
@@ -159,7 +156,6 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             <div className="rpdoc-sub">{subLine1}</div>
             <div className="rpdoc-sub">{subLine2}</div>
 
-            {/* ✅ address forced into ~2 lines */}
             <div className="rpdoc-addr">
               {addrLine1}
               <br />
@@ -179,14 +175,13 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             </div>
 
             <div className="rpdoc-midtitle">
-              {tableHeaderRightTitle || (variant === "INVOICE" ? "VAT INVOICE" : "CREDIT NOTE")}
+              {tableHeaderRightTitle ||
+                (variant === "INVOICE" ? "VAT INVOICE" : "CREDIT NOTE")}
             </div>
           </div>
 
           <div className="rpdoc-logo-spacer" />
         </div>
-
-        {/* ❌ REMOVED BIG RED BRN BAR (client request) */}
 
         {/* TOP BOXES */}
         <div className="rpdoc-topgrid">
@@ -208,7 +203,6 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
                 <span className="v">{customer?.phone || ""}</span>
               </div>
 
-              {/* ✅ FIX alignment: VAT value shifts LEFT (not pushed far right) */}
               <div className="rpdoc-row rpdoc-row-split rpdoc-row-split--left">
                 <span className="rpdoc-pair">
                   <span className="k">BRN:</span>
@@ -221,7 +215,6 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
                 </span>
               </div>
 
-              {/* ✅ Customer code stays on same line, clean alignment */}
               <div className="rpdoc-row rpdoc-row-grid">
                 <span className="k">CUSTOMER CODE:</span>
                 <span className="v">{customer?.customer_code || ""}</span>
@@ -252,13 +245,15 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
 
               <div className="rpdoc-row rpdoc-row-split">
                 <span>
-                  <span className="k">SALES REP:</span> <span className="v">{repName}</span>
+                  <span className="k">SALES REP:</span>{" "}
+                  <span className="v">{repName}</span>
                 </span>
 
                 <span>
                   {repPhone ? (
                     <>
-                      <span className="k">Tel:</span> <span className="v">{repPhone}</span>
+                      <span className="k">Tel:</span>{" "}
+                      <span className="v">{repPhone}</span>
                     </>
                   ) : (
                     <span className="v"></span>
@@ -269,7 +264,7 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           </div>
         </div>
 
-        {/* ✅ ITEMS TABLE */}
+        {/* ITEMS TABLE */}
         <table className="rpdoc-table2">
           <thead className="rpdoc-thead2">
             <tr>
@@ -302,14 +297,12 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
                 <tr className="rpdoc-tr2" key={it.sn}>
                   <td className="rpdoc-center">{it.sn}</td>
                   <td className="rpdoc-center">{it.item_code || ""}</td>
-
-                  {/* ✅ UOM display exactly as required */}
-                  <td className="rpdoc-center">{u === "PCS" ? `PCS ${safe(qty)}` : safe(qty)}</td>
-
+                  <td className="rpdoc-center">
+                    {u === "PCS" ? `PCS ${safe(qty)}` : safe(qty)}
+                  </td>
                   <td className="rpdoc-center">{safe(upb)}</td>
                   <td className="rpdoc-center">{safe(it.total_qty ?? "")}</td>
                   <td className="rpdoc-desc2">{it.description || ""}</td>
-
                   <td className="rpdoc-num">{money(it.unit_price_excl_vat)}</td>
                   <td className="rpdoc-num">{money(it.unit_vat)}</td>
                   <td className="rpdoc-num">{money(it.unit_price_incl_vat)}</td>
@@ -326,12 +319,19 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             <div className="rpdoc-notes-title">Note:</div>
             <ul>
               <li>Goods once sold cannot be returned or exchanged.</li>
-              <li>For any other manufacturing defects, must provide this invoice for a refund or exchange.</li>
               <li>
-                Customer must verify that the quantity of goods conforms with their invoice; otherwise, we will not be
-                responsible after delivery
+                For any other manufacturing defects, must provide this invoice for
+                a refund or exchange.
               </li>
-              <li>Interest of 1% above the bank rate will be charged on sum due if not settled within 30 days.</li>
+              <li>
+                Customer must verify that the quantity of goods conforms with
+                their invoice; otherwise, we will not be responsible after
+                delivery
+              </li>
+              <li>
+                Interest of 1% above the bank rate will be charged on sum due if
+                not settled within 30 days.
+              </li>
               <li>
                 All cheques to be issued on <b>RAM POTTERY LTD</b>.
               </li>
@@ -346,32 +346,52 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
               <span>SUB TOTAL</span>
               <span className="rpdoc-money">{money(totals.subtotal)}</span>
             </div>
+
             <div className="rpdoc-trow">
               <span>{vatLabel}</span>
               <span className="rpdoc-money">{money(totals.vat_amount)}</span>
             </div>
-            <div className="rpdoc-trow">
+
+            {/* ✅ DISCOUNT — ONLY IF CUSTOMER DISCOUNT APPLIED (invoice snapshot) */}
+            {hasDiscount ? (
+              <div className="rpdoc-trow rpdoc-trow-discount">
+                <span>
+                  DISCOUNT
+                  {Number(totals.discount_percent || 0) > 0
+                    ? ` (${Number(totals.discount_percent || 0).toFixed(0)}%)`
+                    : ""}
+                </span>
+                <span className="rpdoc-money">- {money(totals.discount_amount)}</span>
+              </div>
+            ) : null}
+
+            <div className="rpdoc-trow rpdoc-trow-strong">
               <span>TOTAL AMOUNT</span>
               <span className="rpdoc-money">{money(totals.total_amount)}</span>
             </div>
+
             <div className="rpdoc-trow">
               <span>PREVIOUS BALANCE</span>
               <span className="rpdoc-money">{money(totals.previous_balance)}</span>
             </div>
-            <div className="rpdoc-trow">
+
+            <div className="rpdoc-trow rpdoc-trow-strong">
               <span>GROSS TOTAL</span>
               <span className="rpdoc-money">{money(gross)}</span>
             </div>
+
             <div className="rpdoc-trow">
               <span>AMOUNT PAID</span>
               <span className="rpdoc-money">{money(totals.amount_paid)}</span>
             </div>
-            <div className="rpdoc-trow">
+
+            <div className="rpdoc-trow rpdoc-trow-strong">
               <span>BALANCE REMAINING</span>
               <span className="rpdoc-money">{money(totals.balance_remaining)}</span>
             </div>
           </div>
         </div>
+        {/* ✅ IMPORTANT: rpdoc-bottomgrid is CLOSED HERE */}
 
         {/* SIGNATURES */}
         <div className="rpdoc-sign">
@@ -400,14 +420,12 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
         <div className="rpdoc-footerbar">{footerThanksText}</div>
       </div>
 
-      {/* ✅ Print-lock rules + small component-level alignment helpers */}
       <style jsx global>{`
         @page {
           size: A4 portrait;
           margin: 10mm;
         }
 
-        /* Make thead repeat on page breaks */
         .rpdoc-table2 thead {
           display: table-header-group;
         }
@@ -415,13 +433,11 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           display: table-footer-group;
         }
 
-        /* Prevent row splitting */
         .rpdoc-table2 tr {
           break-inside: avoid;
           page-break-inside: avoid;
         }
 
-        /* Ensure colors on print */
         @media print {
           body {
             -webkit-print-color-adjust: exact;
@@ -431,14 +447,12 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
             background: transparent !important;
           }
 
-          /* ✅ slightly bigger logo on print as well */
           .rpdoc-logo--big img {
             width: 56mm !important;
             height: auto !important;
           }
         }
 
-        /* ✅ Customer BRN/VAT: keep values left, not pushed out */
         .rpdoc-row-split--left {
           display: flex;
           justify-content: flex-start;
@@ -451,7 +465,18 @@ export default function RamPotteryDoc(props: RamPotteryDocProps) {
           align-items: baseline;
         }
 
-        /* ✅ Customer code row: label + value in a stable grid */
+        .rpdoc-trow-discount {
+          color: #8a0000;
+          font-weight: 700;
+        }
+
+        .rpdoc-trow-strong {
+          font-weight: 900;
+          border-top: 1px solid #000;
+          margin-top: 4px;
+          padding-top: 4px;
+        }
+
         .rpdoc-row-grid {
           display: grid;
           grid-template-columns: 42mm 1fr;

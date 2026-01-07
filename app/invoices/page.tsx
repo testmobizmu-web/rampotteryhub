@@ -39,9 +39,9 @@ function fmtDate(d?: string | null) {
 
 function fmtDateTime(d: Date) {
   const pad = (x: number) => String(x).padStart(2, "0");
-  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(d.getHours())}:${pad(
+    d.getMinutes()
+  )}:${pad(d.getSeconds())}`;
 }
 
 function normalizeStatus(s?: string | null) {
@@ -65,6 +65,19 @@ function statusBadgeClass(s?: string | null) {
       ? "rp-badge--void"
       : "rp-badge--issued")
   );
+}
+
+function discountText(r: any) {
+  const dp = n(r?.discount_percent);
+  const da = n(r?.discount_amount);
+
+  // show nothing if no discount snapshot on invoice
+  if (!(dp > 0 || da > 0)) return "—";
+
+  const parts: string[] = [];
+  if (da > 0) parts.push(`- ${rs(da)}`);
+  if (dp > 0) parts.push(`(${dp.toFixed(0)}%)`);
+  return parts.join(" ");
 }
 
 export default function InvoicesPage() {
@@ -274,6 +287,11 @@ export default function InvoicesPage() {
     });
   }, [rows, search, status]);
 
+  // ✅ show Discount column only when any invoice in current view has discount snapshot
+  const showDiscount = useMemo(() => {
+    return filtered.some((r) => n(r?.discount_amount) > 0 || n(r?.discount_percent) > 0);
+  }, [filtered]);
+
   const kpis = useMemo(() => {
     const total = filtered.reduce((s, r) => s + n(r.total_amount), 0);
     const paid = filtered.reduce((s, r) => s + n(r.amount_paid), 0);
@@ -329,6 +347,8 @@ export default function InvoicesPage() {
     </div>
   );
 
+  const emptyColSpan = 8 + (showDiscount ? 1 : 0);
+
   return (
     <div className="rp-app">
       <div className="rp-bg" aria-hidden="true">
@@ -365,7 +385,11 @@ export default function InvoicesPage() {
         </div>
 
         {/* Overlay + Drawer */}
-        <button className={`rp-overlay ${drawerOpen ? "is-open" : ""}`} onClick={() => setDrawerOpen(false)} aria-label="Close menu" />
+        <button
+          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
+          onClick={() => setDrawerOpen(false)}
+          aria-label="Close menu"
+        />
         <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -533,7 +557,10 @@ export default function InvoicesPage() {
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Invoice Register</div>
-                <div className="rp-card-sub">Clean view • scroll on mobile • pinned first column</div>
+                <div className="rp-card-sub">
+                  Clean view • scroll on mobile • pinned first column
+                  {showDiscount ? " • discount snapshot (audit-proof)" : ""}
+                </div>
               </div>
               <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
@@ -552,9 +579,18 @@ export default function InvoicesPage() {
                           </th>
                           <th style={{ width: 120 }}>Date</th>
                           <th style={{ minWidth: 220 }}>Customer</th>
+
                           <th className="rp-right rp-col-hide-sm" style={{ width: 140 }}>
                             Total
                           </th>
+
+                          {/* ✅ Discount column appears ONLY if any invoice has discount */}
+                          {showDiscount ? (
+                            <th className="rp-right rp-col-hide-sm" style={{ width: 160 }}>
+                              Discount
+                            </th>
+                          ) : null}
+
                           <th className="rp-right rp-col-hide-sm" style={{ width: 140 }}>
                             Paid
                           </th>
@@ -571,7 +607,7 @@ export default function InvoicesPage() {
                       <tbody>
                         {filtered.length === 0 ? (
                           <tr>
-                            <td colSpan={8} className="rp-td-empty">
+                            <td colSpan={emptyColSpan} className="rp-td-empty">
                               {loading ? "Loading invoices…" : "No invoices found."}
                             </td>
                           </tr>
@@ -580,6 +616,8 @@ export default function InvoicesPage() {
                             const st = normalizeStatus(r.status);
                             const allowDuplicate = canDuplicate(session?.role);
                             const allowVoid = isAdmin(session?.role) && st !== "Void";
+
+                            const hasDisc = n(r?.discount_percent) > 0 || n(r?.discount_amount) > 0;
 
                             return (
                               <tr key={String(r.id)} className="rp-row-hover">
@@ -606,6 +644,14 @@ export default function InvoicesPage() {
                                       <span>Total</span>
                                       <b>{rs(n(r.total_amount))}</b>
                                     </div>
+
+                                    {showDiscount ? (
+                                      <div className="rp-mini-row">
+                                        <span>Discount</span>
+                                        <b style={{ color: hasDisc ? "#b91c1c" : "inherit" }}>{discountText(r)}</b>
+                                      </div>
+                                    ) : null}
+
                                     <div className="rp-mini-row">
                                       <span>Paid</span>
                                       <b>{rs(n(r.amount_paid))}</b>
@@ -618,6 +664,17 @@ export default function InvoicesPage() {
                                 </td>
 
                                 <td className="rp-right rp-col-hide-sm">{rs(n(r.total_amount))}</td>
+
+                                {showDiscount ? (
+                                  <td
+                                    className="rp-right rp-col-hide-sm"
+                                    style={{ color: hasDisc ? "#b91c1c" : "inherit", fontWeight: hasDisc ? 900 : 700 }}
+                                    title={hasDisc ? "Discount snapshot stored on invoice" : ""}
+                                  >
+                                    {discountText(r)}
+                                  </td>
+                                ) : null}
+
                                 <td className="rp-right rp-col-hide-sm">{rs(n(r.amount_paid))}</td>
                                 <td className="rp-right rp-col-hide-sm">{rs(n(r.balance_remaining))}</td>
 
@@ -739,3 +796,4 @@ export default function InvoicesPage() {
     </div>
   );
 }
+

@@ -47,7 +47,6 @@ export default function InvoiceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // printing overlay + reliability
   const [printing, setPrinting] = useState(false);
 
   // do NOT read localStorage during render (hydration safe)
@@ -92,25 +91,19 @@ export default function InvoiceDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params?.id]);
 
-  // Reset printing when dialog closes
   useEffect(() => {
     const onAfterPrint = () => setPrinting(false);
     window.addEventListener("afterprint", onAfterPrint);
     return () => window.removeEventListener("afterprint", onAfterPrint);
   }, []);
 
-  // Print handler: wait for CSS + images, then print
   async function handlePrint() {
     try {
       setPrinting(true);
 
-      // wait a paint so print CSS applies
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
-
-      // wait for any images (logo)
       await waitForImages();
 
-      // tiny delay helps Chrome/Edge open dialog reliably
       setTimeout(() => window.print(), 80);
     } catch {
       try {
@@ -125,7 +118,7 @@ export default function InvoiceDetailPage() {
   const items = Array.isArray(data?.items) ? data!.items : [];
   const customer = invoice?.customers || null;
 
-  // ✅ snapshot totals from invoices table (future-proof)
+  // ✅ snapshot totals from invoices table (audit-proof)
   const computed = useMemo(() => {
     const subtotal = n2(invoice?.subtotal);
     const vatAmount = n2(invoice?.vat_amount);
@@ -134,16 +127,18 @@ export default function InvoiceDetailPage() {
     const prev = n2(invoice?.previous_balance);
     const paid = n2(invoice?.amount_paid);
 
-    const gross =
-      invoice?.gross_total != null ? n2(invoice?.gross_total) : n2(total + prev);
+    const gross = invoice?.gross_total != null ? n2(invoice?.gross_total) : n2(total + prev);
 
-    // some schemas use balance_due, some balance_remaining
     const balanceFromDb =
       invoice?.balance_remaining != null
         ? n2(invoice?.balance_remaining)
         : invoice?.balance_due != null
         ? n2(invoice?.balance_due)
         : Math.max(0, gross - paid);
+
+    // ✅ discount snapshot from invoice row
+    const discountPercent = n2(invoice?.discount_percent);
+    const discountAmount = n2(invoice?.discount_amount);
 
     return {
       subtotal,
@@ -153,6 +148,8 @@ export default function InvoiceDetailPage() {
       paid,
       gross,
       due: balanceFromDb,
+      discountPercent,
+      discountAmount,
     };
   }, [invoice]);
 
@@ -166,7 +163,6 @@ export default function InvoiceDetailPage() {
 
   const invoiceDateFormatted = formatDDMMYYYY(invoice.invoice_date);
 
-  // ✅ Company BRN/VAT from ENV (client-side safe because NEXT_PUBLIC_)
   const companyBrn = (process.env.NEXT_PUBLIC_COMPANY_BRN || "").trim() || null;
   const companyVat = (process.env.NEXT_PUBLIC_COMPANY_VAT || "").trim() || null;
 
@@ -211,12 +207,7 @@ export default function InvoiceDetailPage() {
 
       {/* Premium top bar */}
       <header className="rp-inv-topbar print-hidden">
-        <div
-          className="rp-inv-brand"
-          onClick={() => router.push("/invoices")}
-          role="button"
-          tabIndex={0}
-        >
+        <div className="rp-inv-brand" onClick={() => router.push("/invoices")} role="button" tabIndex={0}>
           <Image src="/images/logo/logo.png" alt="Ram Pottery Logo" width={34} height={34} />
           <div className="rp-inv-brand-text">
             <div className="t1">Ram Pottery Ltd</div>
@@ -333,7 +324,6 @@ export default function InvoiceDetailPage() {
                 name: customer?.name,
                 address: customer?.address,
                 phone: customer?.phone,
-                // your customers table has no brn/vat_no columns
                 brn: "",
                 vat_no: "",
               }}
@@ -351,9 +341,7 @@ export default function InvoiceDetailPage() {
 
                 const unit_price_excl_vat = n2(r.unit_price_excl_vat);
                 const unit_vat = n2(r.unit_vat);
-                const unit_price_incl_vat = n2(
-                  (r.unit_price_incl_vat ?? unit_price_excl_vat + unit_vat) || 0
-                );
+                const unit_price_incl_vat = n2((r.unit_price_incl_vat ?? unit_price_excl_vat + unit_vat) || 0);
                 const line_total = n2((r.line_total ?? unit_price_incl_vat * total_qty) || 0);
 
                 return {
@@ -364,7 +352,6 @@ export default function InvoiceDetailPage() {
                   pcs_qty,
                   units_per_box,
                   total_qty,
-                  // ✅ snapshot description first
                   description: r.description || r.products?.name || "",
                   unit_price_excl_vat,
                   unit_vat,
@@ -376,7 +363,14 @@ export default function InvoiceDetailPage() {
                 subtotal: computed.subtotal,
                 vatPercentLabel: `VAT ${vatPercent.toFixed(0)}%`,
                 vat_amount: computed.vatAmount,
+
+                // ✅ these are already AFTER discount (as stored)
                 total_amount: computed.total,
+
+                // ✅ snapshot discount lines (audit-proof)
+                discount_percent: computed.discountPercent,
+                discount_amount: computed.discountAmount,
+
                 previous_balance: computed.prev,
                 amount_paid: computed.paid,
                 balance_remaining: computed.due,
@@ -388,7 +382,6 @@ export default function InvoiceDetailPage() {
         </main>
       </div>
 
-      {/* Premium + print CSS */}
       <style jsx global>{`
         .rp-inv-shell {
           min-height: 100vh;
@@ -512,7 +505,6 @@ export default function InvoiceDetailPage() {
           overflow: auto;
         }
 
-        /* print */
         @media print {
           .print-hidden {
             display: none !important;
@@ -536,4 +528,3 @@ export default function InvoiceDetailPage() {
     </div>
   );
 }
-

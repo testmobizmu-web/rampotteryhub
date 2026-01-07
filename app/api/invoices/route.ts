@@ -1,3 +1,4 @@
+// app/api/invoices/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getUserFromHeader } from "@/lib/payments";
@@ -12,7 +13,7 @@ function supaAdmin() {
       "Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + (SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY)"
     );
   }
-  return createClient(url, service || anon!);
+  return createClient(url, service || anon!, { auth: { persistSession: false } });
 }
 
 export async function GET(req: NextRequest) {
@@ -31,10 +32,15 @@ export async function GET(req: NextRequest) {
         id,
         invoice_number,
         invoice_date,
+
         total_amount,
         amount_paid,
         balance_due,
         balance_remaining,
+
+        discount_percent,
+        discount_amount,
+
         status,
         customers ( name, customer_code )
       `
@@ -51,3 +57,4 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+

@@ -464,115 +464,117 @@ export default function AddCustomerPage() {
           </section>
 
           {/* Form */}
-          <section className="rp-card rp-card-anim">
-            <div className="rp-card-head rp-card-head--tight">
-              <div>
-                <div className="rp-card-title">Customer Information</div>
-                <div className="rp-card-sub">All fields are optional except customer name</div>
-              </div>
-              <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Working…" : "Ready"}</span>
-            </div>
+<section className="rp-card rp-card-anim">
+  <div className="rp-card-head rp-card-head--tight">
+    <div>
+      <div className="rp-card-title">Customer Information</div>
+      <div className="rp-card-sub">All fields are optional except customer name</div>
+    </div>
+    <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Working…" : "Ready"}</span>
+  </div>
 
-            <div className="rp-card-body">
-              <div className="rp-form-grid">
-                <label className="rp-field">
-                  <span className="rp-label">Customer Code</span>
-                  <input
-                    className="rp-input"
-                    value={form.customer_code}
-                    onChange={(e) => update("customer_code", e.target.value)}
-                  />
-                </label>
+  <div className="rp-card-body">
+    <div className="rp-form-grid">
+      <label className="rp-field">
+        <span className="rp-label">Customer Code</span>
+        <input
+          className="rp-input"
+          value={form.customer_code}
+          onChange={(e) => update("customer_code", e.target.value)}
+        />
+      </label>
 
-                <label className="rp-field">
-                  <span className="rp-label">Customer Name *</span>
-                  <input
-                    ref={nameRef}
-                    className="rp-input"
-                    value={form.name}
-                    onChange={(e) => update("name", e.target.value)}
-                    required
-                    placeholder="e.g. Aqua Valley Ltd"
-                  />
-                </label>
+      {/* ✅ MOVED UP: Client / Category ABOVE Customer Name */}
+      <label className="rp-field">
+        <span className="rp-label">Client / Category</span>
+        <input
+          className="rp-input"
+          value={form.client}
+          onChange={(e) => update("client", e.target.value)}
+          placeholder="e.g. Retail / Wholesale"
+        />
+      </label>
 
-                <label className="rp-field">
-                  <span className="rp-label">Phone</span>
-                  <input
-                    className="rp-input"
-                    value={form.phone}
-                    onChange={(e) => update("phone", e.target.value)}
-                    placeholder="e.g. 5xxxxxxx"
-                  />
-                </label>
+      <label className="rp-field">
+        <span className="rp-label">Customer Name *</span>
+        <input
+          ref={nameRef}
+          className="rp-input"
+          value={form.name}
+          onChange={(e) => update("name", e.target.value)}
+          required
+          placeholder="e.g. Aqua Valley Ltd"
+        />
+      </label>
 
-                <label className="rp-field">
-                  <span className="rp-label">Email</span>
-                  <input
-                    className="rp-input"
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => update("email", e.target.value)}
-                    placeholder="e.g. accounts@company.com"
-                  />
-                </label>
+      <label className="rp-field">
+        <span className="rp-label">Phone</span>
+        <input
+          className="rp-input"
+          value={form.phone}
+          onChange={(e) => update("phone", e.target.value)}
+          placeholder="e.g. 5xxxxxxx"
+        />
+      </label>
 
-                <label className="rp-field rp-field--full">
-                  <span className="rp-label">Address</span>
-                  <textarea
-                    className="rp-input"
-                    rows={3}
-                    value={form.address}
-                    onChange={(e) => update("address", e.target.value)}
-                    placeholder="Street, City, Country"
-                    style={{ resize: "vertical" }}
-                  />
-                </label>
+      <label className="rp-field">
+        <span className="rp-label">Email</span>
+        <input
+          className="rp-input"
+          type="email"
+          value={form.email}
+          onChange={(e) => update("email", e.target.value)}
+          placeholder="e.g. accounts@company.com"
+        />
+      </label>
 
-                <label className="rp-field">
-                  <span className="rp-label">Opening Balance</span>
-                  <input
-                    className="rp-input"
-                    type="number"
-                    step="0.01"
-                    value={form.opening_balance}
-                    onChange={(e) => update("opening_balance", e.target.value)}
-                  />
-                  <div className="rp-muted" style={{ marginTop: 6, fontWeight: 900 }}>
-                    {formatRs(Number(form.opening_balance))}
-                  </div>
-                </label>
+      <label className="rp-field rp-field--full">
+        <span className="rp-label">Address</span>
+        <textarea
+          className="rp-input"
+          rows={3}
+          value={form.address}
+          onChange={(e) => update("address", e.target.value)}
+          placeholder="Street, City, Country"
+          style={{ resize: "vertical" }}
+        />
+      </label>
 
-                <label className="rp-field">
-                  <span className="rp-label">Client / Category</span>
-                  <input
-                    className="rp-input"
-                    value={form.client}
-                    onChange={(e) => update("client", e.target.value)}
-                    placeholder="e.g. Retail / Wholesale"
-                  />
-                </label>
-              </div>
+      <label className="rp-field">
+        <span className="rp-label">Opening Balance</span>
+        <input
+          className="rp-input"
+          type="number"
+          step="0.01"
+          value={form.opening_balance}
+          onChange={(e) => update("opening_balance", e.target.value)}
+        />
+        <div className="rp-muted" style={{ marginTop: 6, fontWeight: 900 }}>
+          {formatRs(Number(form.opening_balance))}
+        </div>
+      </label>
+    </div>
 
-              {err ? (
-                <div className="rp-note rp-note--warn" style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>
-                  {err}
-                </div>
-              ) : null}
+    {err ? (
+      <div className="rp-note rp-note--warn" style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>
+        {err}
+      </div>
+    ) : null}
 
-              <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                <button className="rp-ui-btn" type="button" onClick={cancel} disabled={loading}>
-                  <span className="rp-ui-btn__dot" aria-hidden="true" />
-                  Cancel
-                </button>
+    <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <button className="rp-ui-btn" type="button" onClick={cancel} disabled={loading}>
+        <span className="rp-ui-btn__dot" aria-hidden="true" />
+        Cancel
+      </button>
 
-                <button className="rp-ui-btn rp-ui-btn--danger rp-glow" type="button" disabled={loading} onClick={submit}>
-                  <span className="rp-ui-btn__dot" aria-hidden="true" />
-                  {loading ? "Saving…" : "Create Customer"}
-                </button>
-              </div>
-            </div>
-          </section>
+      <button className="rp-ui-btn rp-ui-btn--danger rp-glow" type="button" disabled={loading} onClick={submit}>
+        <span className="rp-ui-btn__dot" aria-hidden="true" />
+        {loading ? "Saving…" : "Create Customer"}
+      </button>
+    </div>
+  </div>
+</section>
+
 
           <footer className="rp-footer">© {new Date().getFullYear()} Ram Pottery Ltd • Built by Mobiz.mu</footer>
 

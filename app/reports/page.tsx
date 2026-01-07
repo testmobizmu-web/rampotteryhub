@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
@@ -9,12 +9,12 @@ import { rpFetch } from "@/lib/rpFetch";
 type InvoiceRow = {
   id: number | string;
   invoice_number?: string | null;
-  invoice_date?: string | null; // yyyy-mm-dd or timestamp
+  invoice_date?: string | null;
   status?: string | null;
   total_amount?: number | string | null;
   amount_paid?: number | string | null;
   balance_remaining?: number | string | null;
-  customers?: any; // { name? }
+  customers?: any;
 };
 
 type CreditNoteRow = {
@@ -24,6 +24,16 @@ type CreditNoteRow = {
   status?: string | null;
   total_amount?: number | string | null;
   customers?: any;
+};
+
+type SalesByProductRow = {
+  item_code: string;
+  product_name: string;
+  qty: number;
+  ex_total: number;
+  vat_total: number;
+  inc_total: number;
+  line_total: number;
 };
 
 type RpSession = {
@@ -75,7 +85,6 @@ function normalizeCustomerName(customers: any) {
   return customers?.name || "";
 }
 
-// rpFetch in your project can return json directly; keep it safe.
 async function rpJson(url: string, options?: any) {
   const res = await rpFetch(url, options as any);
   return typeof (res as any)?.json === "function" ? await (res as any).json() : res;
@@ -89,7 +98,6 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   };
 
   const csv = [headers.map(esc).join(",")].concat(rows.map((r) => r.map(esc).join(","))).join("\n");
-
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -110,21 +118,23 @@ export default function ReportsPage() {
   const pathname = usePathname();
   const router = useRouter();
 
-  // ✅ hydration lock (must be AFTER hooks are declared)
   const [mounted, setMounted] = useState(false);
 
-  // Shell UI
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [lastSync, setLastSync] = useState("—");
   const [session, setSession] = useState<RpSession | null>(null);
 
-  // Data state
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const [invoicesAll, setInvoicesAll] = useState<InvoiceRow[]>([]);
   const [creditNotesAll, setCreditNotesAll] = useState<CreditNoteRow[]>([]);
+
+  // ✅ NEW: sales by product
+  const [salesLoading, setSalesLoading] = useState(false);
+  const [salesErr, setSalesErr] = useState<string | null>(null);
+  const [salesRows, setSalesRows] = useState<SalesByProductRow[]>([]);
 
   const [from, setFrom] = useState<string>(() => {
     const d = new Date();
@@ -136,13 +146,11 @@ export default function ReportsPage() {
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
-    // theme
     const saved = localStorage.getItem("rp_theme");
     const initial = saved === "dark" ? "dark" : "light";
     setTheme(initial);
     document.documentElement.dataset.theme = initial;
 
-    // session
     try {
       const raw = localStorage.getItem("rp_user");
       if (!raw) {
@@ -179,7 +187,6 @@ export default function ReportsPage() {
     setErr(null);
 
     try {
-      // ✅ robust: works with your existing endpoints
       const invJson: any = await rpJson("/api/invoices/list", { cache: "no-store" });
       const cnJson: any = await rpJson("/api/credit-notes", { cache: "no-store" });
 
@@ -197,6 +204,26 @@ export default function ReportsPage() {
     } finally {
       setLoading(false);
     }
+
+    // ✅ load sales by product using same date range
+    await loadSalesByProduct();
+  }
+
+  async function loadSalesByProduct() {
+    setSalesLoading(true);
+    setSalesErr(null);
+    try {
+      const json: any = await rpJson(`/api/reports/sales-by-product?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+        cache: "no-store",
+      });
+      if (!json?.ok) throw new Error(json?.error || "Failed to load product sales report");
+      setSalesRows(Array.isArray(json.rows) ? json.rows : []);
+    } catch (e: any) {
+      setSalesErr(e?.message || "Failed to load product sales report");
+      setSalesRows([]);
+    } finally {
+      setSalesLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -204,7 +231,6 @@ export default function ReportsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Filter by date range (client-side, safe with list endpoints)
   const filtered = useMemo(() => {
     const fromKey = from || "0000-00-00";
     const toKey = to || "9999-12-31";
@@ -283,6 +309,20 @@ export default function ReportsPage() {
     downloadCsv(`reports_credit_notes_${from}_to_${to}.csv`, headers, rows);
   }
 
+  function exportSalesByProductCsv() {
+    const headers = ["Item Code", "Product", "Qty", "Ex Total", "VAT Total", "Inc Total", "Line Total"];
+    const rows = salesRows.map((r) => [
+      r.item_code,
+      r.product_name || "",
+      n2(r.qty).toFixed(0),
+      n2(r.ex_total).toFixed(2),
+      n2(r.vat_total).toFixed(2),
+      n2(r.inc_total).toFixed(2),
+      n2(r.line_total).toFixed(2),
+    ]);
+    downloadCsv(`reports_sales_by_product_${from}_to_${to}.csv`, headers, rows);
+  }
+
   const userLabel = useMemo(() => {
     const name = (session?.name || session?.username || "").trim();
     return name ? name : "User";
@@ -305,7 +345,6 @@ export default function ReportsPage() {
     return base;
   }, [canSeeAdminNav]);
 
-  // ✅ hydration lock AFTER hooks
   if (!mounted) return null;
 
   return (
@@ -320,12 +359,7 @@ export default function ReportsPage() {
       <div className="rp-shell rp-enter">
         {/* Mobile top bar */}
         <div className="rp-mtop">
-          <button
-            type="button"
-            className="rp-icon-btn rp-burger"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open menu"
-          >
+          <button type="button" className="rp-icon-btn rp-burger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
             <span aria-hidden="true">
               <i />
               <i />
@@ -344,11 +378,7 @@ export default function ReportsPage() {
         </div>
 
         {/* Overlay + Drawer */}
-        <button
-          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
-          onClick={() => setDrawerOpen(false)}
-          aria-label="Close menu"
-        />
+        <button className={`rp-overlay ${drawerOpen ? "is-open" : ""}`} onClick={() => setDrawerOpen(false)} aria-label="Close menu" />
         <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -411,11 +441,7 @@ export default function ReportsPage() {
 
             <nav className="rp-nav">
               {navItems.map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/reports" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                >
+                <Link key={it.href} className={`rp-nav-btn ${it.href === "/reports" ? "rp-nav-btn--active" : ""}`} href={it.href}>
                   <span className="rp-ic3d" aria-hidden="true">
                     ▶
                   </span>
@@ -471,7 +497,7 @@ export default function ReportsPage() {
           <section className="rp-exec rp-card-anim">
             <div className="rp-exec__left">
               <div className="rp-exec__title">Reports & Statements</div>
-              <div className="rp-exec__sub">Period totals • exports • credit notes (VOID excluded)</div>
+              <div className="rp-exec__sub">Period totals • exports • product sales (by item code)</div>
             </div>
             <div className="rp-exec__right">
               <span className={`rp-live ${loading ? "is-dim" : ""}`}>
@@ -484,7 +510,7 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          {/* KPI row (premium) */}
+          {/* KPI row */}
           <section className="rp-kpi-pro rp-card-anim">
             <div className="rp-kpi-pro__cell">
               <div className="rp-kpi-pro__title">Invoice Total</div>
@@ -508,25 +534,18 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          {/* Period controls */}
+          {/* Date range */}
           <section className="rp-card rp-card-anim">
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Date Range</div>
-                <div className="rp-card-sub">Adjust the period and refresh totals</div>
+                <div className="rp-card-sub">Adjust the period then Refresh</div>
               </div>
               <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
 
             <div className="rp-card-body">
-              <div
-                style={{
-                  display: "flex",
-                  gap: 12,
-                  flexWrap: "wrap",
-                  alignItems: "end",
-                }}
-              >
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
                 <label className="rp-field" style={{ minWidth: 220 }}>
                   <span className="rp-label">From</span>
                   <input className="rp-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -538,9 +557,9 @@ export default function ReportsPage() {
                 </label>
 
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button className="rp-ui-btn rp-ui-btn--danger" type="button" onClick={load} disabled={loading}>
+                  <button className="rp-ui-btn rp-ui-btn--danger" type="button" onClick={load} disabled={loading || salesLoading}>
                     <span className="rp-ui-btn__dot" aria-hidden="true" />
-                    {loading ? "Loading…" : "Refresh"}
+                    {loading || salesLoading ? "Loading…" : "Refresh"}
                   </button>
 
                   <Link className="rp-ui-btn rp-ui-btn--brand" href="/invoices" prefetch={false}>
@@ -550,8 +569,7 @@ export default function ReportsPage() {
                 </div>
 
                 <div className="rp-muted" style={{ fontWeight: 900 }}>
-                  Showing <b>{totals.invCount}</b> invoices • <b>{totals.cnCount}</b> credit notes •{" "}
-                  <b>{totals.voidCount}</b> VOID excluded
+                  Showing <b>{totals.invCount}</b> invoices • <b>{totals.cnCount}</b> credit notes • <b>{totals.voidCount}</b> VOID excluded
                 </div>
               </div>
 
@@ -576,27 +594,85 @@ export default function ReportsPage() {
             <div className="rp-card-body">
               <div className="rp-seg rp-seg--pro" style={{ justifyContent: "flex-start" }}>
                 <button className="rp-seg-item rp-seg-item--brand" type="button" onClick={exportInvoicesCsv}>
-                  <span className="rp-icbtn" aria-hidden="true">
-                    ⬇
-                  </span>
+                  <span className="rp-icbtn" aria-hidden="true">⬇</span>
                   Export Invoices CSV
                 </button>
 
                 <button className="rp-seg-item rp-seg-item--brand" type="button" onClick={exportCreditNotesCsv}>
-                  <span className="rp-icbtn" aria-hidden="true">
-                    ⬇
-                  </span>
+                  <span className="rp-icbtn" aria-hidden="true">⬇</span>
                   Export Credit Notes CSV
+                </button>
+
+                <button className="rp-seg-item rp-seg-item--brand" type="button" onClick={exportSalesByProductCsv} disabled={salesRows.length === 0}>
+                  <span className="rp-icbtn" aria-hidden="true">⬇</span>
+                  Export Product Sales CSV
                 </button>
               </div>
 
               <div className="rp-muted" style={{ marginTop: 10 }}>
-                Tip: Credit notes marked <b>VOID</b> are excluded from totals but tracked in KPI.
+                Tip: Credit notes marked <b>VOID</b> are excluded from totals.
               </div>
             </div>
           </section>
 
-          {/* VOID summary (premium callout) */}
+          {/* ✅ NEW: Sales per product code */}
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
+              <div>
+                <div className="rp-card-title">Sales by Product Code</div>
+                <div className="rp-card-sub">Grouped totals by Item Code (for commission / analysis)</div>
+              </div>
+              <span className={`rp-chip ${salesLoading ? "is-dim" : ""}`}>{salesLoading ? "Loading…" : `${salesRows.length} items`}</span>
+            </div>
+
+            <div className="rp-card-body">
+              {salesErr ? (
+                <div className="rp-note rp-note--warn" style={{ whiteSpace: "pre-wrap" }}>
+                  {salesErr}
+                </div>
+              ) : null}
+
+              <div style={{ overflowX: "auto" }}>
+                <table className="rp-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: 10 }}>Item Code</th>
+                      <th style={{ textAlign: "left", padding: 10 }}>Product</th>
+                      <th style={{ textAlign: "right", padding: 10 }}>Qty</th>
+                      <th style={{ textAlign: "right", padding: 10 }}>Ex Total</th>
+                      <th style={{ textAlign: "right", padding: 10 }}>VAT</th>
+                      <th style={{ textAlign: "right", padding: 10 }}>Inc Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salesRows.map((r) => (
+                      <tr key={r.item_code}>
+                        <td style={{ padding: 10, fontWeight: 900 }}>{r.item_code}</td>
+                        <td style={{ padding: 10 }}>{r.product_name || "—"}</td>
+                        <td style={{ padding: 10, textAlign: "right", fontWeight: 900 }}>{n2(r.qty).toFixed(0)}</td>
+                        <td style={{ padding: 10, textAlign: "right" }}>{formatRs(n2(r.ex_total))}</td>
+                        <td style={{ padding: 10, textAlign: "right" }}>{formatRs(n2(r.vat_total))}</td>
+                        <td style={{ padding: 10, textAlign: "right", fontWeight: 900 }}>{formatRs(n2(r.inc_total))}</td>
+                      </tr>
+                    ))}
+                    {salesRows.length === 0 && !salesLoading ? (
+                      <tr>
+                        <td colSpan={6} style={{ padding: 12, opacity: 0.7, fontWeight: 900 }}>
+                          No sales for this period.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="rp-muted" style={{ marginTop: 10 }}>
+                Uses invoice items and groups by product item code for the selected date range.
+              </div>
+            </div>
+          </section>
+
+          {/* VOID summary */}
           <section className="rp-card rp-card-anim" style={{ border: "1px solid rgba(255,107,107,.22)" }}>
             <div className="rp-card-head rp-card-head--tight">
               <div>
