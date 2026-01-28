@@ -31,7 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="color-scheme" content="light dark" />
         <link rel="preload" as="image" href="/images/logo/logo.png" />
 
-        {/* ✅ Prevent theme flicker */}
+        {/* Prevent theme flicker */}
         <script
           dangerouslySetInnerHTML={{
             __html: `

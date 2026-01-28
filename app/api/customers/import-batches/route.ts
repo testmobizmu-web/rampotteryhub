@@ -11,6 +11,26 @@ function supaAdmin() {
   return createClient(url, service || anon!);
 }
 
+function digitsOnly(v: any) {
+  return String(v ?? "").replace(/[^\d]/g, "");
+}
+
+function normalizeMu230(v: any): string | null {
+  const d = digitsOnly(v);
+  if (!d) return null;
+  if (d.length === 8) return "230" + d;
+  if (d.length === 11 && d.startsWith("230")) return d;
+  return null;
+}
+
+function isLikelyMuMobile(v: any) {
+  const d = digitsOnly(v);
+  const local = d.length === 11 && d.startsWith("230") ? d.slice(3) : d;
+  // mobile numbers in MU commonly start with 5/7/8/9 (safe heuristic)
+  return local.length === 8 && /^[5789]/.test(local);
+}
+
+
 export async function GET(req: NextRequest) {
   try {
     const user = getUserFromHeader(req.headers.get("x-rp-user"));

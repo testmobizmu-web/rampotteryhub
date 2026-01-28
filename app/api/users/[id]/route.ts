@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
+export const dynamic = "force-dynamic";
+
 export async function PATCH(
   req: NextRequest,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> } // ✅ MATCHES validator
 ) {
   try {
-    // ✅ REQUIRED in Next 16
-    const { id } = await context.params;
+    const { id } = await context.params; // ✅ REQUIRED
 
     const body = await req.json();
     const { role, permissions } = body;
@@ -21,10 +22,7 @@ export async function PATCH(
 
     const { error } = await supabase
       .from("users")
-      .update({
-        role,
-        permissions,
-      })
+      .update({ role, permissions })
       .eq("id", id);
 
     if (error) {
@@ -43,3 +41,4 @@ export async function PATCH(
     );
   }
 }
+

@@ -68,7 +68,9 @@ function supaAdmin() {
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !service) {
-    throw new Error("Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY");
+    throw new Error(
+      "Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY"
+    );
   }
   return createClient(url, service, { auth: { persistSession: false } });
 }
@@ -76,7 +78,9 @@ function supaAdmin() {
 export async function POST(req: NextRequest) {
   try {
     const user = getUserFromHeader(req.headers.get("x-rp-user"));
-    if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
 
     const body: any = await req.json().catch(() => ({}));
 
@@ -90,9 +94,21 @@ export async function POST(req: NextRequest) {
     const previousBalance = n2(body.previousBalance ?? body.previous_balance ?? 0);
     const amountPaid = n2(body.amountPaid ?? body.amount_paid ?? 0);
 
-    // ✅ discount percent comes from UI
+    // ✅ customer discount % (auto-filled in UI)
     const discountPercentRaw = n2(body.discountPercent ?? body.discount_percent ?? 0);
     const discountPercent = clamp(discountPercentRaw, 0, 100);
+
+    // ✅ pricing mode:
+    // - LINE_DISCOUNTED: UI already applied discount into unit prices
+    // - TOTAL_DISCOUNT: API applies discount on total
+    // - AUTO: backward-compat -> behave like TOTAL_DISCOUNT
+    const pricingModeRaw = String(body.pricingMode ?? body.pricing_mode ?? "").toUpperCase();
+    const pricingMode: "LINE_DISCOUNTED" | "TOTAL_DISCOUNT" | "AUTO" =
+      pricingModeRaw === "LINE_DISCOUNTED"
+        ? "LINE_DISCOUNTED"
+        : pricingModeRaw === "TOTAL_DISCOUNT"
+        ? "TOTAL_DISCOUNT"
+        : "AUTO";
 
     const items: RawInvoiceItem[] = Array.isArray(body.items) ? (body.items as RawInvoiceItem[]) : [];
     if (!customerId || !invoiceDate || items.length === 0) {
@@ -101,7 +117,7 @@ export async function POST(req: NextRequest) {
 
     const supabase = supaAdmin();
 
-    // Normalize items
+    // Normalize items (trust unit prices coming from UI)
     const normalizedItems: NormalizedItem[] = items.map((it, idx) => {
       const pid = Number(it.product_id ?? it.productId);
       if (!Number.isFinite(pid)) throw new Error(`Item #${idx + 1}: Missing product_id`);
@@ -120,10 +136,15 @@ export async function POST(req: NextRequest) {
       const unitEx = n2(it.unit_price_excl_vat ?? it.unitPriceExclVat ?? 0);
       const vatPercentLine = n2(it.vat_rate ?? it.vatRate ?? 15) === 0 ? 0 : 15;
 
-      // compute VAT if not provided
-      const unitVat = it.unit_vat != null || it.unitVat != null ? n2(it.unit_vat ?? it.unitVat) : unitEx * (vatPercentLine / 100);
+      const unitVat =
+        it.unit_vat != null || it.unitVat != null
+          ? n2(it.unit_vat ?? it.unitVat)
+          : unitEx * (vatPercentLine / 100);
+
       const unitIncl =
-        it.unit_price_incl_vat != null || it.unitPriceInclVat != null ? n2(it.unit_price_incl_vat ?? it.unitPriceInclVat) : unitEx + unitVat;
+        it.unit_price_incl_vat != null || it.unitPriceInclVat != null
+          ? n2(it.unit_price_incl_vat ?? it.unitPriceInclVat)
+          : unitEx + unitVat;
 
       const lineTotal = it.line_total != null ? n2(it.line_total) : unitIncl * totalQty;
 
@@ -145,19 +166,38 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    // Totals (per line VAT)
-    const subtotalEx = normalizedItems.reduce((sum, it) => sum + n2(it.total_qty) * n2(it.unit_price_excl_vat), 0);
-    const vatAmount = normalizedItems.reduce((sum, it) => sum + n2(it.total_qty) * n2(it.unit_vat), 0);
+    // Totals based on provided line prices
+    const subtotalEx = normalizedItems.reduce(
+      (sum, it) => sum + n2(it.total_qty) * n2(it.unit_price_excl_vat),
+      0
+    );
+    const vatAmount = normalizedItems.reduce(
+      (sum, it) => sum + n2(it.total_qty) * n2(it.unit_vat),
+      0
+    );
     const totalBeforeDiscount = subtotalEx + vatAmount;
 
-    // ✅ Discount applied on TOTAL after VAT
-    const discountAmount = totalBeforeDiscount * (discountPercent / 100);
-    const totalAmount = Math.max(0, totalBeforeDiscount - discountAmount);
+    // ✅ decide effective mode
+    const effectiveMode: "LINE_DISCOUNTED" | "TOTAL_DISCOUNT" =
+      pricingMode === "LINE_DISCOUNTED" ? "LINE_DISCOUNTED" : "TOTAL_DISCOUNT";
+
+    let discountAmount = 0;
+    let totalAmount = totalBeforeDiscount;
+
+    if (effectiveMode === "TOTAL_DISCOUNT") {
+      // legacy mode: discount applies on total after VAT
+      discountAmount = totalBeforeDiscount * (discountPercent / 100);
+      totalAmount = Math.max(0, totalBeforeDiscount - discountAmount);
+    } else {
+      // LINE_DISCOUNTED: already discounted in unit prices
+      // keep UI discount amount if provided (for display), else 0
+      discountAmount = Math.max(0, n2(body.discountAmount ?? body.discount_amount ?? 0));
+      totalAmount = totalBeforeDiscount;
+    }
 
     const grossTotal = totalAmount + previousBalance;
     const balanceRemaining = Math.max(0, grossTotal - amountPaid);
 
-    // Create invoice
     const { data: newInv, error: invError } = await supabase
       .from("invoices")
       .insert({
@@ -169,7 +209,6 @@ export async function POST(req: NextRequest) {
         sales_rep: salesRep,
         sales_rep_phone: salesRepPhone,
 
-        // ✅ store EX + VAT (before discount) + Total after discount
         subtotal: subtotalEx,
         vat_percent: null, // per-line
         vat_amount: vatAmount,
@@ -188,6 +227,9 @@ export async function POST(req: NextRequest) {
         discount_amount: discountAmount,
 
         status: "ISSUED",
+
+        // If your table has it, uncomment:
+        // pricing_mode: effectiveMode,
       })
       .select("id, invoice_number")
       .single();
@@ -196,7 +238,6 @@ export async function POST(req: NextRequest) {
 
     const invoiceId = newInv.id;
 
-    // Insert items
     const itemsToInsert = normalizedItems.map((it) => ({
       invoice_id: invoiceId,
       ...it,
@@ -215,7 +256,11 @@ export async function POST(req: NextRequest) {
       const qty = Math.trunc(n2(it.total_qty));
       if (qty <= 0) continue;
 
-      const { data: pRow, error: pErr } = await supabase.from("products").select("id, current_stock").eq("id", pid).single();
+      const { data: pRow, error: pErr } = await supabase
+        .from("products")
+        .select("id, current_stock")
+        .eq("id", pid)
+        .single();
 
       if (pErr || !pRow) {
         await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
@@ -234,7 +279,6 @@ export async function POST(req: NextRequest) {
         throw new Error(`Stock update failed (product ${pid})`);
       }
 
-      // optional movement log
       try {
         await supabase.from("stock_movements").insert({
           product_id: pid,
@@ -245,17 +289,61 @@ export async function POST(req: NextRequest) {
           notes: it.uom === "PCS" ? `PCS sale` : `BOX sale`,
         });
       } catch {
-        // ignore if table not present
+        // ignore
       }
     }
+
+
+   // ✅ Auto WhatsApp payment update (Business API) when paid/partially paid
+if (amountPaid > 0) {
+  try {
+    const { data: cRow } = await supabase
+      .from("customers")
+      .select("name, whatsapp, phone")
+      .eq("id", customerId)
+      .single();
+
+    const to = (cRow?.whatsapp || cRow?.phone || "").toString();
+
+    const status = amountPaid >= grossTotal && grossTotal > 0 ? "PAID ✅" : "PARTIALLY PAID ✅";
+
+    const msg =
+      `RAM POTTERY LTD\n` +
+      `Payment update for your invoice\n\n` +
+      `Invoice No: ${newInv.invoice_number}\n` +
+      `Date: ${invoiceDate}\n` +
+      `Customer: ${cRow?.name || ""}\n` +
+      `Status: ${status}\n\n` +
+      `Amount Paid: Rs ${amountPaid.toFixed(2)}\n` +
+      `Balance Remaining: Rs ${balanceRemaining.toFixed(2)}\n\n` +
+      `Thank you.`;
+
+    // call internal route (same deployment)
+    await fetch(`${req.nextUrl.origin}/api/whatsapp/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-rp-user": req.headers.get("x-rp-user") || "",
+      },
+      body: JSON.stringify({ to, text: msg }),
+    });
+  } catch {
+    // don’t fail invoice creation if WhatsApp fails
+  }
+}
+
 
     return NextResponse.json({
       ok: true,
       invoiceId,
       invoiceNumber: newInv.invoice_number,
+      pricingMode: effectiveMode,
     });
   } catch (err: any) {
     console.error("Create invoice error:", err);
-    return NextResponse.json({ ok: false, error: err?.message || "Failed to create invoice" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: err?.message || "Failed to create invoice" },
+      { status: 500 }
+    );
   }
 }

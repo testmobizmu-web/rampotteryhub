@@ -1,18 +1,9 @@
 import React from "react";
 import RamPotteryDoc, { RamPotteryDocProps } from "./RamPotteryDoc";
 
-type CreditNoteDocProps = Omit<RamPotteryDocProps, "variant" | "tableHeaderRightTitle"> & {
-  title?: string; // optional override
-};
+type CreditNoteDocProps = Omit<RamPotteryDocProps, "variant">;
 
 export default function RamPotteryDocCreditNote(props: CreditNoteDocProps) {
-  const { title, ...rest } = props;
-
-  return (
-    <RamPotteryDoc
-      {...rest}
-      variant="CREDIT_NOTE"
-      tableHeaderRightTitle={title || "CREDIT NOTE"}
-    />
-  );
+  return <RamPotteryDoc {...props} variant="CREDIT_NOTE" />;
 }
+

@@ -7,12 +7,14 @@ type RowIn = Record<string, any>;
 
 type NormalizedCustomer = {
   customer_code: string;
-  name: string;
+  name: string;            // from customer_name
+  client: string | null;   // from client_name
   address: string | null;
-  phone: string | null;
+  phone: string | null;    // from phone_no
+  whatsapp: string | null; // from whatsapp_no
   brn: string | null;
   vat_no: string | null;
-  whatsapp: string | null;
+  discount_percent: number; // from discount (10 / 10%)
 };
 
 function supaAdmin() {
@@ -21,7 +23,7 @@ function supaAdmin() {
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !(service || anon)) throw new Error("Missing Supabase env");
-  return createClient(url, service || anon!);
+  return createClient(url, service || anon!, { auth: { persistSession: false } });
 }
 
 function isAdminOrManager(user: any) {
@@ -29,44 +31,74 @@ function isAdminOrManager(user: any) {
   return role === "admin" || role === "manager";
 }
 
-const REQUIRED = ["customer_code", "name", "address", "phone", "brn", "vat_no", "whatsapp"] as const;
-
 function normKey(k: string) {
   return String(k || "").trim().toLowerCase();
 }
 
-function normalizeRow(r: RowIn): NormalizedCustomer {
-  const get = (key: string) => {
-    const foundKey = Object.keys(r).find((k) => normKey(k) === key);
-    const v = foundKey ? r[foundKey] : null;
-    const s = v == null ? "" : String(v).trim();
-    return s.length ? s : "";
-  };
+function getByAliases(r: RowIn, aliases: string[]) {
+  const keys = Object.keys(r);
+  const foundKey = keys.find((k) => aliases.includes(normKey(k)));
+  const v = foundKey ? r[foundKey] : null;
+  const s = v == null ? "" : String(v).trim();
+  return s.length ? s : "";
+}
 
-  const customer_code = get("customer_code");
-  const name = get("name");
-  const address = get("address");
-  const phone = get("phone");
-  const brn = get("brn");
-  const vat_no = get("vat_no");
-  const whatsapp = get("whatsapp");
+function parseDiscount(v: any): number {
+  const s = String(v ?? "").trim();
+  if (!s) return 0;
+  const cleaned = s.replace("%", "").trim();
+  const num = Number(cleaned);
+  if (!Number.isFinite(num)) return 0;
+  // clamp 0..100
+  return Math.min(Math.max(num, 0), 100);
+}
+
+/** Accept your Excel headers exactly + tolerant aliases */
+function normalizeRow(r: RowIn): NormalizedCustomer {
+  const customer_code = getByAliases(r, ["customer_code", "code", "customer code"]);
+
+  const name = getByAliases(r, ["customer_name", "name", "customer", "customer name"]);
+  const client = getByAliases(r, ["client_name", "client", "client name"]);
+
+  const address = getByAliases(r, ["address", "addr"]);
+
+  const phone = getByAliases(r, ["phone_no", "phone", "phone number", "tel", "mobile"]);
+  const whatsapp = getByAliases(r, ["whatsapp_no", "whatsapp", "whatsapp number"]);
+
+  const brn = getByAliases(r, ["brn", "brn_no", "brn number"]);
+  const vat_no = getByAliases(r, ["vat_no", "vat", "vat number"]);
+
+  const discountRaw = getByAliases(r, ["discount", "discount_percent", "discount %", "disc"]);
+  const discount_percent = parseDiscount(discountRaw);
 
   return {
-    customer_code,
+    customer_code: customer_code.trim().toUpperCase(),
     name,
+    client: client || null,
     address: address || null,
     phone: phone || null,
+    whatsapp: whatsapp || null,
     brn: brn || null,
     vat_no: vat_no || null,
-    whatsapp: whatsapp || null,
+    discount_percent,
   };
 }
+
+/** Required: customer_code + customer_name */
+const REQUIRED_ANY_OF = [
+  { label: "customer_code", anyOf: ["customer_code", "code", "customer code"] },
+  { label: "customer_name", anyOf: ["customer_name", "name", "customer", "customer name"] },
+] as const;
 
 function validateHeaders(rows: RowIn[]) {
   if (!rows.length) return { ok: false, error: "No rows found in file." };
 
   const keys = Object.keys(rows[0] || {}).map(normKey);
-  const missing = REQUIRED.filter((h) => !keys.includes(h));
+
+  const missing = REQUIRED_ANY_OF
+    .filter((r) => !r.anyOf.some((h) => keys.includes(h)))
+    .map((r) => r.label);
+
   if (missing.length) {
     return { ok: false, error: `Missing required columns: ${missing.join(", ")}` };
   }
@@ -79,7 +111,9 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
+
     const mode = String(body?.mode || "DRY_RUN").toUpperCase(); // DRY_RUN | IMPORT
+    const clearExisting = Boolean(body?.clearExisting); // ✅ archive all customers first (IMPORT only)
     const filename = String(body?.filename || "upload");
     const fileType = String(body?.fileType || "");
     const fileSize = Number(body?.fileSize || 0);
@@ -88,7 +122,6 @@ export async function POST(req: NextRequest) {
     const headCheck = validateHeaders(rows);
     if (!headCheck.ok) return NextResponse.json({ ok: false, error: headCheck.error }, { status: 400 });
 
-    // Normalize
     const normalized: NormalizedCustomer[] = rows.map(normalizeRow);
 
     // Row validations
@@ -96,52 +129,54 @@ export async function POST(req: NextRequest) {
     const seen = new Set<string>();
 
     normalized.forEach((r, idx) => {
-      const rowNo = idx + 2; // + header row
-      if (!r.customer_code) errors.push({ row: rowNo, field: "customer_code", message: "Customer code is required" });
-      if (!r.name) errors.push({ row: rowNo, field: "name", message: "Name is required" });
+      const rowNo = idx + 2;
 
-      const key = (r.customer_code || "").toLowerCase();
+      if (!r.customer_code) errors.push({ row: rowNo, field: "customer_code", message: "Customer code is required" });
+      if (!r.name) errors.push({ row: rowNo, field: "customer_name", message: "Customer name is required" });
+
+      const key = (r.customer_code || "").trim().toLowerCase();
       if (key) {
         if (seen.has(key)) errors.push({ row: rowNo, field: "customer_code", message: "Duplicate customer_code in file" });
         seen.add(key);
+      }
+
+      // discount validation (optional)
+      if (r.discount_percent < 0 || r.discount_percent > 100) {
+        errors.push({ row: rowNo, field: "discount", message: "Discount must be between 0 and 100" });
       }
     });
 
     const supabase = supaAdmin();
 
-    // Check duplicates against DB (customer_code)
-    const codes = Array.from(
-      new Set(normalized.map((r) => r.customer_code).filter(Boolean).map((s) => s.trim()))
-    );
+    // Check DB duplicates only if IMPORT + not clearing existing
+    if (mode === "IMPORT" && !clearExisting) {
+      const codes = Array.from(
+        new Set(normalized.map((r) => r.customer_code).filter(Boolean).map((s) => s.trim()))
+      );
 
-    let existingCodes = new Set<string>();
-    if (codes.length) {
-      // chunk query to avoid URL limits
-      const chunkSize = 200;
-      for (let i = 0; i < codes.length; i += chunkSize) {
-        const chunk = codes.slice(i, i + chunkSize);
-        const { data, error } = await supabase
-          .from("customers")
-          .select("customer_code")
-          .in("customer_code", chunk);
-
-        if (error) throw error;
-        (data || []).forEach((x: any) => existingCodes.add(String(x.customer_code || "").toLowerCase()));
+      const existingCodes = new Set<string>();
+      if (codes.length) {
+        const chunkSize = 200;
+        for (let i = 0; i < codes.length; i += chunkSize) {
+          const chunk = codes.slice(i, i + chunkSize);
+          const { data, error } = await supabase.from("customers").select("customer_code").in("customer_code", chunk);
+          if (error) throw error;
+          (data || []).forEach((x: any) => existingCodes.add(String(x.customer_code || "").toLowerCase()));
+        }
       }
+
+      normalized.forEach((r, idx) => {
+        const rowNo = idx + 2;
+        const key = (r.customer_code || "").toLowerCase();
+        if (key && existingCodes.has(key)) {
+          errors.push({ row: rowNo, field: "customer_code", message: "Customer code already exists in database" });
+        }
+      });
     }
 
-    normalized.forEach((r, idx) => {
+    const validRows = normalized.filter((_, idx) => {
       const rowNo = idx + 2;
-      const key = (r.customer_code || "").toLowerCase();
-      if (key && existingCodes.has(key)) {
-        errors.push({ row: rowNo, field: "customer_code", message: "Customer code already exists in database" });
-      }
-    });
-
-    const validRows = normalized.filter((r, idx) => {
-      const rowNo = idx + 2;
-      const hasRowErr = errors.some((e) => e.row === rowNo);
-      return !hasRowErr;
+      return !errors.some((e) => e.row === rowNo);
     });
 
     const summary = {
@@ -150,7 +185,7 @@ export async function POST(req: NextRequest) {
       errorCount: errors.length,
     };
 
-    // DRY RUN: no DB write
+    // DRY RUN
     if (mode === "DRY_RUN") {
       return NextResponse.json({
         ok: true,
@@ -158,12 +193,27 @@ export async function POST(req: NextRequest) {
         summary,
         preview: validRows.slice(0, 50),
         errors: errors.slice(0, 300),
+        acceptedHeaders: {
+          required: ["customer_code", "customer_name"],
+          optional: ["client_name", "address", "phone_no", "whatsapp_no", "brn", "vat_no", "discount"],
+        },
       });
     }
 
-    // IMPORT: admin/manager only
+    // IMPORT permissions
     if (!isAdminOrManager(user)) {
       return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+    }
+
+    // ✅ clear existing customers (IMPORT only)
+    // ✅ IMPORTANT: archive (is_active=false), NEVER delete (FK safe)
+    if (clearExisting) {
+      const { error: archErr } = await supabase
+        .from("customers")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .not("id", "is", null);
+
+      if (archErr) throw archErr;
     }
 
     // Create batch log
@@ -187,10 +237,18 @@ export async function POST(req: NextRequest) {
 
     const batchId = batch.id;
 
-    // Insert valid customers (tag with batch id)
-    // If you have unique constraint on customer_code, this is extra safety.
+    // Map to DB columns
     const payload = validRows.map((r) => ({
-      ...r,
+      customer_code: r.customer_code,
+      name: r.name,
+      client: r.client,
+      address: r.address,
+      phone: r.phone,
+      whatsapp: r.whatsapp,
+      brn: r.brn,
+      vat_no: r.vat_no,
+      discount_percent: r.discount_percent, // ✅ new
+      is_active: true, // ✅ new customers active
       import_batch_id: batchId,
       import_source: filename,
     }));
@@ -207,6 +265,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       mode,
       batchId,
+      clearedExisting: clearExisting,
       summary,
       errors: errors.slice(0, 300),
     });
@@ -215,3 +274,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: err?.message || "Bulk import failed" }, { status: 500 });
   }
 }
+

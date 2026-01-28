@@ -1,3 +1,4 @@
+// app/customers/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -9,12 +10,15 @@ import { rpFetch } from "@/lib/rpFetch";
 type Customer = {
   id: number | string;
   customer_code?: string | null;
-  name?: string | null;
-  phone?: string | null;
-  whatsapp?: string | null;
+  name?: string | null; // customer_name
+  client?: string | null; // client_name
   address?: string | null;
+  phone?: string | null; // phone_no
+  whatsapp?: string | null; // whatsapp_no
   brn?: string | null;
   vat_no?: string | null;
+  discount_percent?: number | null;
+  is_active?: boolean | null;
   created_at?: string | null;
 };
 
@@ -27,6 +31,16 @@ type RpSession = {
 
 function safeStr(v: unknown) {
   return String(v ?? "").trim();
+}
+
+function n0(v: any) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function fmtPct(v: any) {
+  const num = Math.min(Math.max(n0(v), 0), 100);
+  return `${num}%`;
 }
 
 function roleUpper(r?: string) {
@@ -60,7 +74,6 @@ export default function CustomersPage() {
   const [err, setErr] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
 
-  // SSR-safe session
   const [mounted, setMounted] = useState(false);
   const [session, setSession] = useState<RpSession | null>(null);
 
@@ -69,6 +82,7 @@ export default function CustomersPage() {
   const debounceRef = useRef<number | null>(null);
 
   const [filter, setFilter] = useState<"ALL" | "WITH_VAT" | "WITH_BRN">("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ACTIVE" | "ARCHIVED" | "ALL">("ACTIVE");
 
   // ⋮ menu state
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -77,13 +91,11 @@ export default function CustomersPage() {
   useEffect(() => {
     setMounted(true);
 
-    // theme
     const saved = localStorage.getItem("rp_theme");
     const initial = saved === "dark" ? "dark" : "light";
     setTheme(initial);
     document.documentElement.dataset.theme = initial;
 
-    // session
     try {
       const raw = localStorage.getItem("rp_user");
       if (!raw) {
@@ -99,7 +111,6 @@ export default function CustomersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Close ⋮ menu on outside click / ESC
   useEffect(() => {
     function onDown(e: MouseEvent) {
       if (!openMenuId) return;
@@ -144,7 +155,6 @@ export default function CustomersPage() {
   }, [canSeeAdminNav]);
 
   useEffect(() => {
-    // debounce search
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => setDebouncedQ(q.trim()), 220);
     return () => {
@@ -168,17 +178,18 @@ export default function CustomersPage() {
     }
   }
 
-  async function load() {
+  async function load(nextStatus?: "ACTIVE" | "ARCHIVED" | "ALL") {
     try {
       setErr(null);
       setLoading(true);
 
-      const res = await rpFetch("/api/customers/list", { method: "GET", cache: "no-store" });
+      const st = nextStatus || statusFilter;
+      const showArchived = st === "ARCHIVED" || st === "ALL" ? "1" : "0";
+
+      const res = await rpFetch(`/api/customers/list?showArchived=${showArchived}`, { method: "GET", cache: "no-store" });
       const json = await res.json().catch(() => ({}));
 
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || "Failed to load customers");
-      }
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to load customers");
 
       const list: Customer[] = Array.isArray(json.customers) ? json.customers : [];
       setCustomers(list);
@@ -198,8 +209,11 @@ export default function CustomersPage() {
 
   const filtered = useMemo(() => {
     const s = debouncedQ.toLowerCase();
-
     let list = customers;
+
+    // status filter (client-side for ALL mode)
+    if (statusFilter === "ACTIVE") list = list.filter((c) => c.is_active !== false);
+    if (statusFilter === "ARCHIVED") list = list.filter((c) => c.is_active === false);
 
     if (filter === "WITH_VAT") list = list.filter((c) => safeStr(c.vat_no));
     if (filter === "WITH_BRN") list = list.filter((c) => safeStr(c.brn));
@@ -210,11 +224,13 @@ export default function CustomersPage() {
       const blob = [
         c.customer_code,
         c.name,
+        c.client,
+        c.address,
         c.phone,
         c.whatsapp,
-        c.address,
         c.brn,
         c.vat_no,
+        String(c.discount_percent ?? ""),
       ]
         .map(safeStr)
         .join(" ")
@@ -222,14 +238,16 @@ export default function CustomersPage() {
 
       return blob.includes(s);
     });
-  }, [customers, debouncedQ, filter]);
+  }, [customers, debouncedQ, filter, statusFilter]);
 
   const kpis = useMemo(() => {
     const total = filtered.length;
     const withVat = filtered.filter((c) => safeStr(c.vat_no)).length;
     const withBrn = filtered.filter((c) => safeStr(c.brn)).length;
     const missingCode = filtered.filter((c) => !safeStr(c.customer_code)).length;
-    return { total, withVat, withBrn, missingCode };
+    const avgDisc =
+      total === 0 ? 0 : Math.round((filtered.reduce((a, c) => a + n0(c.discount_percent), 0) / total) * 10) / 10;
+    return { total, withVat, withBrn, missingCode, avgDisc };
   }, [filtered]);
 
   function toggleRowMenu(id: string) {
@@ -253,12 +271,7 @@ export default function CustomersPage() {
       <div className="rp-shell rp-enter">
         {/* Mobile top bar */}
         <div className="rp-mtop">
-          <button
-            type="button"
-            className="rp-icon-btn rp-burger"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open menu"
-          >
+          <button type="button" className="rp-icon-btn rp-burger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
             <span aria-hidden="true">
               <i />
               <i />
@@ -277,11 +290,7 @@ export default function CustomersPage() {
         </div>
 
         {/* Overlay + Drawer */}
-        <button
-          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
-          onClick={() => setDrawerOpen(false)}
-          aria-label="Close menu"
-        />
+        <button className={`rp-overlay ${drawerOpen ? "is-open" : ""}`} onClick={() => setDrawerOpen(false)} aria-label="Close menu" />
         <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -344,11 +353,7 @@ export default function CustomersPage() {
 
             <nav className="rp-nav">
               {navItems.map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                >
+                <Link key={it.href} className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`} href={it.href}>
                   <span className="rp-ic3d" aria-hidden="true">
                     ▶
                   </span>
@@ -404,16 +409,16 @@ export default function CustomersPage() {
           <section className="rp-exec rp-card-anim">
             <div className="rp-exec__left">
               <div className="rp-exec__title">Customers</div>
-              <div className="rp-exec__sub">Search • Clean codes • Quick actions • Bulk import (Admin/Manager)</div>
+              <div className="rp-exec__sub">
+                Format: <b>Code • Customer • Client • Address • Phone • WhatsApp • BRN • VAT • Discount</b>
+              </div>
             </div>
             <div className="rp-exec__right">
               <span className={`rp-live ${loading ? "is-dim" : ""}`}>
                 <span className="rp-live-dot" aria-hidden="true" />
                 {loading ? "Syncing" : "Live"}
               </span>
-              <span className={`rp-chip rp-chip--soft ${err ? "rp-chip--warn" : ""}`}>
-                {err ? "Attention needed" : "All systems normal"}
-              </span>
+              <span className={`rp-chip rp-chip--soft ${err ? "rp-chip--warn" : ""}`}>{err ? "Attention needed" : "All systems normal"}</span>
             </div>
           </section>
 
@@ -422,7 +427,7 @@ export default function CustomersPage() {
             <div className="rp-kpi-pro__cell">
               <div className="rp-kpi-pro__title">Customers</div>
               <div className="rp-kpi-pro__value">{kpis.total}</div>
-              <div className="rp-kpi-pro__sub">Filtered results</div>
+              <div className="rp-kpi-pro__sub">Filtered</div>
             </div>
             <div className="rp-kpi-pro__cell">
               <div className="rp-kpi-pro__title">With VAT</div>
@@ -435,9 +440,9 @@ export default function CustomersPage() {
               <div className="rp-kpi-pro__sub">BRN present</div>
             </div>
             <div className="rp-kpi-pro__cell">
-              <div className="rp-kpi-pro__title">Missing Code</div>
-              <div className="rp-kpi-pro__value">{kpis.missingCode}</div>
-              <div className="rp-kpi-pro__sub">Needs cleanup</div>
+              <div className="rp-kpi-pro__title">Avg Discount</div>
+              <div className="rp-kpi-pro__value">{kpis.avgDisc}%</div>
+              <div className="rp-kpi-pro__sub">Across results</div>
             </div>
           </section>
 
@@ -481,18 +486,35 @@ export default function CustomersPage() {
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Search & Filters</div>
-                <div className="rp-card-sub">Code • name • phone • whatsapp • BRN • VAT</div>
+                <div className="rp-card-sub">Code • customer • client • phone • whatsapp • BRN • VAT • discount</div>
               </div>
               <span className={`rp-chip ${loading ? "is-dim" : ""}`}>{loading ? "Loading…" : "Ready"}</span>
             </div>
 
             <div className="rp-card-body">
-              <input
-                className="rp-input rp-input--full"
-                placeholder="Search customers…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
+              <input className="rp-input rp-input--full" placeholder="Search customers…" value={q} onChange={(e) => setQ(e.target.value)} />
+
+              <div className="rp-chip-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+                {[
+                  { key: "ACTIVE", label: "Active" },
+                  { key: "ARCHIVED", label: "Archived" },
+                  { key: "ALL", label: "All" },
+                ].map((x) => (
+                  <button
+                    key={x.key}
+                    className={`rp-filter-pill ${statusFilter === (x.key as any) ? "rp-filter-pill--active" : ""}`}
+                    type="button"
+                    onClick={() => {
+                      const next = x.key as any;
+                      setStatusFilter(next);
+                      // fetch archived data when needed
+                      if (next === "ARCHIVED" || next === "ALL") load(next);
+                    }}
+                  >
+                    {x.label}
+                  </button>
+                ))}
+              </div>
 
               <div className="rp-chip-row">
                 {[
@@ -520,7 +542,7 @@ export default function CustomersPage() {
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">Customer Register</div>
-                <div className="rp-card-sub">Executive view • clean codes • quick actions</div>
+                <div className="rp-card-sub">Matches your import file format</div>
               </div>
               <span className="rp-chip rp-chip--soft">{filtered.length} result(s)</span>
             </div>
@@ -529,26 +551,29 @@ export default function CustomersPage() {
               <table className="rp-table rp-table--premium">
                 <thead>
                   <tr>
-                    <th style={{ width: 140 }}>Code</th>
-                    <th>Name</th>
-                    <th style={{ width: 140 }}>Phone</th>
-                    <th style={{ width: 150 }}>WhatsApp</th>
-                    <th style={{ width: 180 }}>BRN</th>
-                    <th style={{ width: 180 }}>VAT</th>
-                    <th style={{ width: 90, textAlign: "right" }}>⋮</th>
+                    <th style={{ width: 120 }}>Code</th>
+                    <th style={{ width: 220 }}>Customer</th>
+                    <th style={{ width: 180 }}>Client</th>
+                    <th>Address</th>
+                    <th style={{ width: 130 }}>Phone</th>
+                    <th style={{ width: 140 }}>WhatsApp</th>
+                    <th style={{ width: 150 }}>BRN</th>
+                    <th style={{ width: 150 }}>VAT</th>
+                    <th style={{ width: 110, textAlign: "right" }}>Discount</th>
+                    <th style={{ width: 80, textAlign: "right" }}>⋮</th>
                   </tr>
                 </thead>
 
                 <tbody>
                   {loading ? (
                     <tr>
-                      <td colSpan={7} className="rp-td-empty">
+                      <td colSpan={10} className="rp-td-empty">
                         Loading customers…
                       </td>
                     </tr>
                   ) : filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="rp-td-empty">
+                      <td colSpan={10} className="rp-td-empty">
                         No customers found.
                       </td>
                     </tr>
@@ -556,24 +581,25 @@ export default function CustomersPage() {
                     filtered.map((c) => {
                       const id = String(c.id);
                       const code = safeStr(c.customer_code) || "—";
-                      const name = safeStr(c.name) || "—";
-                      const addr = safeStr(c.address);
+                      const customerName = safeStr(c.name) || "—";
+                      const clientName = safeStr(c.client) || "—";
+                      const addr = safeStr(c.address) || "—";
 
                       const isOpen = openMenuId === id;
+                      const archived = c.is_active === false;
 
                       return (
-                        <tr key={id}>
+                        <tr key={id} style={archived ? { opacity: 0.72 } : undefined}>
                           <td className="rp-strong">{code}</td>
-                          <td>
-                            <div className="rp-strong">{name}</div>
-                            {addr ? <div className="rp-muted">{addr}</div> : null}
-                          </td>
+                          <td className="rp-strong">{customerName}</td>
+                          <td>{clientName}</td>
+                          <td>{addr}</td>
                           <td>{safeStr(c.phone) || "—"}</td>
                           <td>{safeStr(c.whatsapp) || "—"}</td>
                           <td>{safeStr(c.brn) || "—"}</td>
                           <td>{safeStr(c.vat_no) || "—"}</td>
+                          <td style={{ textAlign: "right", fontWeight: 950 }}>{fmtPct(c.discount_percent)}</td>
 
-                          {/* ⋮ dropdown actions */}
                           <td style={{ textAlign: "right" }}>
                             <div
                               className="rp-row-actions"
@@ -585,7 +611,7 @@ export default function CustomersPage() {
                                 className="rp-icon-btn rp-icon-btn--kebab"
                                 aria-haspopup="menu"
                                 aria-expanded={isOpen ? "true" : "false"}
-                                onClick={() => toggleRowMenu(id)}
+                                onClick={() => setOpenMenuId((cur) => (cur === id ? null : id))}
                                 title="Actions"
                               >
                                 ⋮
@@ -596,36 +622,15 @@ export default function CustomersPage() {
                                   className="rp-menu rp-menu--right"
                                   role="menu"
                                   aria-label="Customer actions"
-                                  style={{
-                                    position: "absolute",
-                                    right: 0,
-                                    top: "calc(100% + 8px)",
-                                    minWidth: 180,
-                                    zIndex: 50,
-                                  }}
+                                  style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", minWidth: 180, zIndex: 50 }}
                                 >
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="rp-menu-item"
-                                    onClick={() => goTo(`/customers/${id}/edit`)}
-                                  >
+                                  <button type="button" role="menuitem" className="rp-menu-item" onClick={() => goTo(`/customers/${id}/edit`)}>
                                     ✏️ Edit
                                   </button>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="rp-menu-item"
-                                    onClick={() => goTo(`/customers/${id}/pricing`)}
-                                  >
+                                  <button type="button" role="menuitem" className="rp-menu-item" onClick={() => goTo(`/customers/${id}/pricing`)}>
                                     💰 Pricing
                                   </button>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="rp-menu-item rp-menu-item--danger"
-                                    onClick={() => goTo(`/customers/${id}/activity`)}
-                                  >
+                                  <button type="button" role="menuitem" className="rp-menu-item" onClick={() => goTo(`/customers/${id}/activity`)}>
                                     📌 Activity
                                   </button>
                                 </div>
@@ -640,7 +645,8 @@ export default function CustomersPage() {
               </table>
 
               <div style={{ marginTop: 10 }} className="rp-muted">
-                Tip: Keep <b>customer_code</b> unique (e.g. CUST-001) to speed up invoice creation.
+                Tip: import file headers must be exactly:{" "}
+                <b>customer_code, customer_name, client_name, address, phone_no, whatsapp_no, brn, vat_no, discount</b>
               </div>
             </div>
           </section>

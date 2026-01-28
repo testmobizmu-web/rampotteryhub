@@ -53,6 +53,55 @@ function normalizeStatus(s?: string | null) {
   return "Issued";
 }
 
+function digitsOnly(v: any) {
+  return String(v ?? "").replace(/[^\d]/g, "");
+}
+
+// Mauritius only: returns "230XXXXXXXX" or ""
+function normalizeMuPhone(raw: any) {
+  const d = digitsOnly(raw);
+  if (!d) return "";
+
+  if (d.length === 8) return "230" + d;                 // local 8 digits
+  if (d.startsWith("230") && d.length === 11) return d; // 230 + 8 digits
+
+  return ""; // reject non-MU / invalid
+}
+
+function buildInvoicePaymentWhatsAppText(opts: {
+  customerName?: string;
+  invoiceNo: string;
+  paidNow: number;
+  totalPaid: number;
+  balance: number;
+  pdfUrl: string;
+}) {
+  const status = opts.balance <= 0 ? "PAID ✅" : "PARTIALLY PAID ✅";
+
+  const money = (v: number) =>
+    new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
+      Number.isFinite(v) ? v : 0
+    );
+
+  return [
+    `Payment received ✅`,
+    opts.customerName ? `Customer: ${opts.customerName}` : null,
+    `Invoice: ${opts.invoiceNo}`,
+    `Status: ${status}`,
+    `Paid now: Rs ${money(opts.paidNow)}`,
+    `Total paid: Rs ${money(opts.totalPaid)}`,
+    `Balance: Rs ${money(opts.balance)}`,
+    `PDF: ${opts.pdfUrl}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function openWhatsApp(to230digits: string, text: string) {
+  const url = `https://wa.me/${to230digits}?text=${encodeURIComponent(text)}`;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function statusBadgeClass(s?: string | null) {
   const st = normalizeStatus(s);
   return (
@@ -244,26 +293,70 @@ export default function InvoicesPage() {
   }
 
   async function savePayment() {
-    if (!payInvoice?.id) return;
-    setPaySaving(true);
-    try {
-      const res = await rpFetch(`/api/invoices/${payInvoice.id}/set-payment`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amountPaid: n(payAmount) }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j?.ok === false) throw new Error(j?.error || "Failed to set payment");
+  if (!payInvoice?.id) return;
+  setPaySaving(true);
 
-      setPayOpen(false);
-      setPayInvoice(null);
-      await load();
-    } catch (e: any) {
-      alert(e?.message || "Failed to set payment");
-    } finally {
-      setPaySaving(false);
+  try {
+    const prevPaid = n(payInvoice?.amount_paid);
+
+    const res = await rpFetch(`/api/invoices/${payInvoice.id}/set-payment`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amountPaid: n(payAmount) }), // this is TOTAL paid (your current behavior)
+    });
+
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j?.ok === false) throw new Error(j?.error || "Failed to set payment");
+
+    // ---------- WhatsApp (Option 1) ----------
+    // Get the freshest values:
+    // Prefer API response if it returns invoice; otherwise compute from current UI values.
+    const nextPaid =
+      Number.isFinite(Number(j?.invoice?.amount_paid)) ? n(j.invoice.amount_paid) : n(payAmount);
+
+    const gross =
+      Number.isFinite(Number(j?.invoice?.gross_total))
+        ? n(j.invoice.gross_total)
+        : n(payInvoice?.gross_total ?? payInvoice?.total_amount);
+
+    const nextBalance =
+      Number.isFinite(Number(j?.invoice?.balance_remaining))
+        ? n(j.invoice.balance_remaining)
+        : Math.max(0, gross - nextPaid);
+
+    const paidNow = Math.max(0, nextPaid - prevPaid);
+
+    const cust = j?.invoice?.customers || payInvoice?.customers || null;
+
+    const to = normalizeMuPhone(cust?.whatsapp || cust?.phone || "");
+    if (to) {
+      const pdfUrl = `${window.location.origin}/api/invoices/${payInvoice.id}/pdf`;
+      const invoiceNo = String(payInvoice?.invoice_number || payInvoice?.id);
+
+      const text = buildInvoicePaymentWhatsAppText({
+        customerName: cust?.name || "",
+        invoiceNo,
+        paidNow,
+        totalPaid: nextPaid,
+        balance: nextBalance,
+        pdfUrl,
+      });
+
+      openWhatsApp(to, text);
     }
+    // If no number -> silently skip (no crash)
+
+    // close modal + refresh UI
+    setPayOpen(false);
+    setPayInvoice(null);
+    await load();
+  } catch (e: any) {
+    alert(e?.message || "Failed to set payment");
+  } finally {
+    setPaySaving(false);
   }
+}
+
 
   function applySearch() {
     setSearch(searchDraft.trim());
@@ -618,6 +711,8 @@ export default function InvoicesPage() {
                             const allowVoid = isAdmin(session?.role) && st !== "Void";
 
                             const hasDisc = n(r?.discount_percent) > 0 || n(r?.discount_amount) > 0;
+                            const wa = normalizeMuPhone(r.customers?.whatsapp || r.customers?.phone || "");
+
 
                             return (
                               <tr key={String(r.id)} className="rp-row-hover">
@@ -635,7 +730,11 @@ export default function InvoicesPage() {
                                 <td>{fmtDate(r.invoice_date)}</td>
 
                                 <td>
-                                  <div className="rp-strong">{r.customers?.name || "—"}</div>
+                                  <div className="rp-strong" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                                                                    <span>{r.customers?.name || "—"}</span>
+                                                                                     {wa ? <span title={`WhatsApp: ${wa}`}>🟢</span> : null}
+                                                                                  </div>
+
                                   <div className="rp-muted">{r.customers?.customer_code || ""}</div>
 
                                   {/* Mobile compact amounts (shown only on small screens) */}
@@ -711,18 +810,24 @@ export default function InvoicesPage() {
                                         <button onClick={() => duplicateInvoicePrefill(r.id)}>Duplicate</button>
                                       )}
 
-                                      {st !== "Void" && (
-                                        <>
-                                          <div className="rp-row-actions-sep" />
-                                          <button onClick={() => openPaymentModal(r)}>Set Payment…</button>
-                                          {st !== "Paid" && <button onClick={() => markAsPaid(r.id)}>Mark as Paid</button>}
-                                          {allowVoid && (
-                                            <button className="danger" onClick={() => voidInvoice(r.id)}>
-                                              Void Invoice
-                                            </button>
-                                          )}
-                                        </>
-                                      )}
+                                     {st !== "Void" && (
+  <>
+    <div className="rp-row-actions-sep" />
+
+    {/* ✅ Option 1 (No Meta): staff clicks Send in WhatsApp */}
+    <button onClick={() => openPaymentModal(r)}>Set Payment…</button>
+
+    {st !== "Paid" && <button onClick={() => markAsPaid(r.id)}>Mark as Paid</button>}
+
+    {allowVoid && (
+      <button className="danger" onClick={() => voidInvoice(r.id)}>
+        Void Invoice
+      </button>
+    )}
+  </>
+)}
+
+
                                     </div>
                                   )}
                                 </td>

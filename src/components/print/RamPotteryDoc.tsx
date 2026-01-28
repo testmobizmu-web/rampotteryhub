@@ -1,3 +1,6 @@
+"use client";
+
+import Image from "next/image";
 import React from "react";
 
 type Party = {
@@ -9,258 +12,372 @@ type Party = {
   customer_code?: string | null;
 };
 
-export type DocLine = {
-  sn: number;
-  item_code: string;
-  box: number | null;
-  unit_per_box: number | null;
-  total_qty: number | null;
-  description: string;
-  unit_excl: number;
-  vat: number;
-  unit_incl: number;
-  line_total: number;
+type DocCompany = {
+  brn?: string | null;
+  vat_no?: string | null;
 };
 
-type Props = {
-  docType: "VAT INVOICE" | "CREDIT NOTE";
-  docNoLabel: string; // "INVOICE NO" / "CREDIT NOTE NO"
+type Totals = {
+  subtotal?: number | null;
+  vatPercentLabel?: string;
+  vat_amount?: number | null;
+  total_amount?: number | null;
+  previous_balance?: number | null;
+  amount_paid?: number | null;
+  balance_remaining?: number | null;
+
+  discount_percent?: number | null;
+  discount_amount?: number | null;
+};
+
+export type RamPotteryDocItem = {
+  sn: number;
+  item_code?: string;
+  uom?: string; // BOX / PCS
+  box_qty?: number; // box qty or pcs qty
+  units_per_box?: number; // unit per box
+  total_qty?: number; // total qty
+  description?: string;
+  unit_price_excl_vat?: number;
+  unit_vat?: number;
+  unit_price_incl_vat?: number;
+  line_total?: number;
+};
+
+export type RamPotteryDocProps = {
+  variant: "INVOICE" | "CREDIT_NOTE";
+
+  docNoLabel: string;
   docNoValue: string;
+
+  dateLabel: string;
   dateValue: string;
-  poNo?: string | null;
 
-  // Company block (you can hardcode)
-  companyBrn: string;
-  companyVat: string;
+  purchaseOrderLabel?: string;
+  purchaseOrderValue?: string;
 
-  salesRep?: string | null;
-  salesRepPhone?: string | null;
+  salesRepName?: string;
+  salesRepPhone?: string;
 
   customer: Party;
+  company: DocCompany;
 
-  lines: DocLine[];
+  items: RamPotteryDocItem[];
 
-  subtotal: number;
-  vatAmount: number;
-  totalAmount: number;
-  previousBalance?: number;
-  grossTotal?: number;
-  amountPaid?: number;
-  balanceRemaining?: number;
+  totals: Totals;
 
   preparedBy?: string | null;
   deliveredBy?: string | null;
 
-  footerText?: string;
 };
 
-export default function RamPotteryDoc(p: Props) {
-  const money = (n: any) => Number(n || 0).toFixed(2);
+function n2(v: any) {
+  const x = Number(v ?? 0);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function fmtMoney(v: any) {
+  const x = n2(v);
+  // Always 2dp like your screenshot
+  return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+export default function RamPotteryDoc(props: RamPotteryDocProps) {
+  const {
+    variant,
+    docNoLabel,
+    docNoValue,
+    dateLabel,
+    dateValue,
+    purchaseOrderLabel,
+    purchaseOrderValue,
+    salesRepName,
+    salesRepPhone,
+    customer,
+    company,
+    items,
+    totals,
+    preparedBy,
+    deliveredBy,
+  } = props;
+
+  const docTitle = variant === "CREDIT_NOTE" ? "VAT CREDIT NOTE" : "VAT INVOICE";
+
+  const showPO = Boolean(purchaseOrderLabel);
+  const poVal = purchaseOrderValue || "";
+
+  const brn = company?.brn || "";
+  const vat = company?.vat_no || "";
 
   return (
-    <div className="rp-doc-wrap">
-      <div className="rp-doc">
-        <div className="rp-sheet">
-          {/* Header */}
-          <div className="rp-top">
-            <div className="rp-logo-box">
-              {/* Use your logo path in /public */}
-              <img className="rp-logo-img" src="/images/logo/logo.png" alt="Ram Pottery" />
-            </div>
+    <div className="rpdoc-page">
+      {/* ===== HEADER (logo left, title center) ===== */}
+      <div className="rpdoc-headerTop">
+        <div className="rpdoc-headerTop-left">
+          <Image
+            className="rpdoc-logoTop"
+            src="/images/logo/logo.png"
+            alt="Ram Pottery Logo"
+            width={800}
+            height={300}
+            priority
+          />
+        </div>
 
-            <div>
-              <div className="rp-brand">RAM POTTERY LTD</div>
-              <div className="rp-subline">MANUFACTURER &amp; IMPORTER OF QUALITY CLAY PRODUCTS AND OTHER RELIGIOUS ITEMS</div>
-              <div className="rp-addr">Robert Kennedy Street, Reunion Maurel, Petit Raffray - Mauritius</div>
-              <div className="rp-contacts">
-                <b>Tel:</b> +230 57788884 +230 58060268 +230 52522844
-              </div>
-              <div className="rp-contacts">
-                <b>Email:</b> info@rampottery.com &nbsp; <b>Web:</b> www.rampottery.com
-              </div>
+        <div className="rpdoc-headerTop-center">
+          <h1 className="rpdoc-titleOneRow">RAM POTTERY LTD</h1>
 
-              <div className="rp-doc-title">{p.docType}</div>
-            </div>
+          <div className="rpdoc-subTwoRows">
+            <div>MANUFACTURER &amp; IMPORTER OF QUALITY CLAY</div>
+            <div>PRODUCTS AND OTHER RELIGIOUS ITEMS</div>
           </div>
 
-          {/* Customer + Doc details boxes */}
-          <div className="rp-row2">
-            <div className="rp-box">
-              <div className="rp-box-h">CUSTOMER DETAILS</div>
-              <div className="rp-box-body">
-                <div className="rp-kv">
-                  <b>Name:</b>
-                  <div className="rp-val">{p.customer?.name || ""}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>ADDRESS:</b>
-                  <div className="rp-val">{p.customer?.address || ""}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>Tel:</b>
-                  <div className="rp-val">{p.customer?.phone || ""}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>BRN:</b>
-                  <div className="rp-val">{p.customer?.brn || ""}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>VAT No:</b>
-                  <div className="rp-val">{p.customer?.vat_no || ""}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>CUSTOMER CODE:</b>
-                  <div className="rp-val">{p.customer?.customer_code || ""}</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="rp-box">
-              <div className="rp-right-h">
-                BRN: {p.companyBrn} / VAT:{p.companyVat}
-              </div>
-              <div className="rp-box-body">
-                <div className="rp-kv">
-                  <b>{p.docNoLabel}:</b>
-                  <div className="rp-val">{p.docNoValue}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>DATE:</b>
-                  <div className="rp-val">{p.dateValue}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>PURCHASE ORDER NO:</b>
-                  <div className="rp-val">{p.poNo || ""}</div>
-                </div>
-                <div className="rp-kv">
-                  <b>SALES REP:</b>
-                  <div className="rp-val">
-                    {p.salesRep || ""} &nbsp;&nbsp; <b style={{ color: "var(--rp-red)" }}>Tel:</b>{" "}
-                    {p.salesRepPhone || ""}
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div className="rpdoc-addrTwoRows">
+            <div>Robert Kennedy Street, Reunion Maurel,</div>
+            <div>Petit Raffray - Mauritius</div>
           </div>
 
-          {/* Items table */}
-          <div className="rp-items">
-            <table className="rp-table">
-              <thead>
-                <tr>
-                  <th style={{ width: 40 }}>SN</th>
-                  <th style={{ width: 90 }}>ITEM CODE</th>
-                  <th style={{ width: 55 }}>BOX</th>
-                  <th style={{ width: 80 }}>UNIT<br />PER BOX</th>
-                  <th style={{ width: 90 }}>TOTAL QTY</th>
-                  <th>DESCRIPTION</th>
-                  <th style={{ width: 95 }}>UNIT PRICE<br />(Excl Vat)</th>
-                  <th style={{ width: 70 }}>VAT</th>
-                  <th style={{ width: 95 }}>UNIT PRICE<br />(Incl Vat)</th>
-                  <th style={{ width: 110 }}>TOTAL AMOUNT<br />(Incl Vat)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {p.lines.map((ln) => (
-                  <tr key={ln.sn}>
-                    <td className="center">{ln.sn}</td>
-                    <td className="center">{ln.item_code}</td>
-                    <td className="center">{ln.box ?? ""}</td>
-                    <td className="center">{ln.unit_per_box ?? ""}</td>
-                    <td className="center">{ln.total_qty ?? ""}</td>
-                    <td>{ln.description}</td>
-                    <td className="right">{money(ln.unit_excl)}</td>
-                    <td className="right">{money(ln.vat)}</td>
-                    <td className="right">{money(ln.unit_incl)}</td>
-                    <td className="right">{money(ln.line_total)}</td>
-                  </tr>
-                ))}
-
-                {/* pad empty rows for same height (optional) */}
-                {Array.from({ length: Math.max(0, 10 - p.lines.length) }).map((_, i) => (
-                  <tr key={`pad-${i}`}>
-                    <td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="rpdoc-phonesOneRow">
+            <span>Tel: +230 57788884 +230 58060268 +230 52522844</span>
           </div>
 
-          {/* Notes + totals */}
-          <div className="rp-bottom">
-            <div className="rp-notes">
-              <div className="rp-notes-title">Note:</div>
-              <ul>
-                <li>Goods once sold cannot be returned or exchanged.</li>
-                <li>For any other manufacturing defects, must provide this invoice for a refund or exchange.</li>
-                <li>Customer must verify that the quantity of goods conforms with their invoice; otherwise, we will not be responsible after delivery</li>
-                <li>Interest of 1% above the bank rate will be charged on sum due if not settled within 30 days.</li>
-                <li>All cheques to be issued on <b>RAM POTTERY LTD</b>.</li>
-                <li>Bank transfer to <b>000 44 570 46 59 MCB Bank</b></li>
-              </ul>
-            </div>
-
-            <div className="rp-totals">
-              <div className="rp-totals-row rp-totals-muted">
-                <div className="rp-totals-l">SUB TOTAL</div>
-                <div className="rp-totals-r">{money(p.subtotal)}</div>
-              </div>
-              <div className="rp-totals-row rp-totals-muted">
-                <div className="rp-totals-l">VAT 15%</div>
-                <div className="rp-totals-r">{money(p.vatAmount)}</div>
-              </div>
-              <div className="rp-totals-row">
-                <div className="rp-totals-l">TOTAL AMOUNT</div>
-                <div className="rp-totals-r">{money(p.totalAmount)}</div>
-              </div>
-
-              <div className="rp-totals-row rp-totals-muted">
-                <div className="rp-totals-l">PREVIOUS BALANCE</div>
-                <div className="rp-totals-r">{money(p.previousBalance)}</div>
-              </div>
-              <div className="rp-totals-row">
-                <div className="rp-totals-l">GROSS TOTAL</div>
-                <div className="rp-totals-r">{money(p.grossTotal)}</div>
-              </div>
-              <div className="rp-totals-row rp-totals-muted">
-                <div className="rp-totals-l">AMOUNT PAID</div>
-                <div className="rp-totals-r">{money(p.amountPaid)}</div>
-              </div>
-              <div className="rp-totals-row">
-                <div className="rp-totals-l">BALANCE REMAINING</div>
-                <div className="rp-totals-r">{money(p.balanceRemaining)}</div>
-              </div>
-            </div>
+          <div className="rpdoc-mailWebOneRow">
+            <span>Email: info@rampottery.com</span>
+            <span className="rpdoc-gap" />
+            <span>Web: www.rampottery.com</span>
           </div>
 
-          {/* Signatures */}
-          <div className="rp-sign">
-            <div className="rp-sign-grid">
-              <div>
-                <div className="rp-sign-line"></div>
-                <div className="rp-sign-cap">Signature</div>
-                <div className="rp-sign-small">Prepared by: {p.preparedBy || ""}</div>
+          <div className="rpdoc-docOneRow">{docTitle}</div>
+        </div>
+
+        <div className="rpdoc-headerTop-right" />
+      </div>
+
+      {/* ===== TOP BOXES ===== */}
+      <div className="rpdoc-topgrid">
+        {/* CUSTOMER DETAILS */}
+        <div className="rpdoc-box">
+          <div className="rpdoc-box-title">CUSTOMER DETAILS</div>
+          <div className="rpdoc-box-body">
+            <div className="rpdoc-row">
+              <div className="k">Name:</div>
+              <div className="v">{customer?.name || ""}</div>
+            </div>
+            <div className="rpdoc-row">
+              <div className="k">ADDRESS:</div>
+              <div className="v">{customer?.address || ""}</div>
+            </div>
+            <div className="rpdoc-row">
+              <div className="k">Tel:</div>
+              <div className="v">{customer?.phone || ""}</div>
+            </div>
+
+            <div className="rpdoc-row-split">
+              <div className="rpdoc-pair">
+                <div className="k">BRN:</div>
+                <div className="v">{customer?.brn || ""}</div>
               </div>
-              <div>
-                <div className="rp-sign-line"></div>
-                <div className="rp-sign-cap">Signature</div>
-                <div className="rp-sign-small">Delivered by: {p.deliveredBy || ""}</div>
-              </div>
-              <div>
-                <div className="rp-sign-line"></div>
-                <div className="rp-sign-cap">Customer Signature</div>
-                <div className="rp-sign-small">
-                  Customer Name: <i>Please verify before sign</i>
-                </div>
+              <div className="rpdoc-pair">
+                <div className="k">VAT No:</div>
+                <div className="v">{customer?.vat_no || ""}</div>
               </div>
             </div>
 
-            <div className="rp-footerbar">
-              {p.footerText || "We thank you for your purchase and look forward to being of service to you again"}
+            <div className="rpdoc-row">
+              <div className="k">CUSTOMER CODE:</div>
+              <div className="v">{customer?.customer_code || ""}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* BRN/VAT + INVOICE DETAILS */}
+        <div className="rpdoc-box">
+          <div className="rpdoc-box-title">
+            BRN:&nbsp;{brn}&nbsp;|&nbsp;VAT:{vat}
+          </div>
+          <div className="rpdoc-box-body">
+            <div className="rpdoc-row">
+              <div className="k">{docNoLabel}</div>
+              <div className="v">{docNoValue}</div>
+            </div>
+            <div className="rpdoc-row">
+              <div className="k">{dateLabel}</div>
+              <div className="v">{dateValue}</div>
+            </div>
+
+            {showPO ? (
+              <div className="rpdoc-row">
+                <div className="k">{purchaseOrderLabel}</div>
+                <div className="v">{poVal}</div>
+              </div>
+            ) : null}
+
+            <div className="rpdoc-row">
+              <div className="k">SALES REP:</div>
+              <div className="v">
+                {salesRepName || ""}
+                {salesRepPhone ? (
+                  <>
+                    <span className="rpdoc-gap" />
+                    <span className="rpdoc-red">Tel: {salesRepPhone}</span>
+                  </>
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
       </div>
+
+      {/* ===== ITEMS TABLE ===== */}
+      <table className="rpdoc-table2">
+        <colgroup>
+          <col style={{ width: "4%" }} />
+          <col style={{ width: "10%" }} />
+          <col style={{ width: "6%" }} />
+          <col style={{ width: "8%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "29%" }} />
+          <col style={{ width: "10%" }} />
+          <col style={{ width: "6%" }} />
+          <col style={{ width: "10%" }} />
+          <col style={{ width: "8%" }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>SN</th>
+            <th>ITEM CODE</th>
+            <th>BOX</th>
+            <th>UNIT PER BOX</th>
+            <th>TOTAL QTY</th>
+            <th>DESCRIPTION</th>
+            <th>UNIT PRICE<br />(EXCL VAT)</th>
+            <th>VAT</th>
+            <th>UNIT PRICE<br />(INCL VAT)</th>
+            <th>TOTAL AMOUNT<br />(INCL VAT)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(items?.length ? items : []).map((it) => {
+            const uom = (it.uom || "BOX").toUpperCase();
+            const boxQty = n2(it.box_qty);
+            const upb = n2(it.units_per_box);
+            const totalQty = n2(it.total_qty);
+
+            return (
+              <tr key={it.sn}>
+                <td className="c">{it.sn}</td>
+                <td className="c">{it.item_code || ""}</td>
+                <td className="c">{uom}</td>
+                <td className="c">{upb ? String(upb) : ""}</td>
+                <td className="c">{totalQty ? String(totalQty) : String(boxQty || 0)}</td>
+                <td className="l desc">{it.description || ""}</td>
+                <td className="r">{fmtMoney(it.unit_price_excl_vat)}</td>
+                <td className="r">{fmtMoney(it.unit_vat)}</td>
+                <td className="r">{fmtMoney(it.unit_price_incl_vat)}</td>
+                <td className="r">{fmtMoney(it.line_total)}</td>
+              </tr>
+            );
+          })}
+
+          {/* If you want fixed height like the screenshot even with few lines */}
+          {items.length < 6
+            ? Array.from({ length: 6 - items.length }).map((_, i) => (
+                <tr key={`blank-${i}`}>
+                  <td className="c">&nbsp;</td>
+                  <td className="c">&nbsp;</td>
+                  <td className="c">&nbsp;</td>
+                  <td className="c">&nbsp;</td>
+                  <td className="c">&nbsp;</td>
+                  <td className="l desc">&nbsp;</td>
+                  <td className="r">&nbsp;</td>
+                  <td className="r">&nbsp;</td>
+                  <td className="r">&nbsp;</td>
+                  <td className="r">&nbsp;</td>
+                </tr>
+              ))
+            : null}
+        </tbody>
+      </table>
+
+      {/* ===== NOTES + TOTALS ===== */}
+      <div className="rpdoc-bottomgrid">
+        <div className="rpdoc-notes">
+          <div className="rpdoc-notes-title">Note:</div>
+          <ul>
+            <li>Goods once sold cannot be returned or exchanged.</li>
+            <li>For any other manufacturing defects, must provide this invoice for a refund or exchange.</li>
+            <li>
+              Customer must verify that the quantity of goods conforms with their invoice; otherwise, we will not be
+              responsible after delivery
+            </li>
+            <li>
+              Interest of <span className="redStrong">1%</span> above the bank rate will be charged on sum due if not
+              settled within <span className="redStrong">30 days</span>.
+            </li>
+            <li>All cheques to be issued on RAM POTTERY LTD.</li>
+            <li>Bank transfer to: 000 44 570 46 59 MCB Bank</li>
+          </ul>
+        </div>
+
+        <div className="rpdoc-totals">
+          <div className="trow">
+            <div>SUB TOTAL</div>
+            <div className="money">{fmtMoney(totals?.subtotal)}</div>
+          </div>
+          <div className="trow">
+            <div>{(totals?.vatPercentLabel || "VAT").toUpperCase()}</div>
+            <div className="money">{fmtMoney(totals?.vat_amount)}</div>
+          </div>
+          <div className="trow">
+            <div>TOTAL AMOUNT</div>
+            <div className="money">{fmtMoney(totals?.total_amount)}</div>
+          </div>
+          <div className="trow">
+            <div>PREVIOUS BALANCE</div>
+            <div className="money">{fmtMoney(totals?.previous_balance)}</div>
+          </div>
+          <div className="trow">
+            <div>GROSS TOTAL</div>
+            <div className="money">{fmtMoney(totals?.balance_remaining ?? totals?.total_amount)}</div>
+          </div>
+          <div className="trow">
+            <div>AMOUNT PAID</div>
+            <div className="money">{fmtMoney(totals?.amount_paid)}</div>
+          </div>
+          <div className="trow">
+            <div>BALANCE REMAINING</div>
+            <div className="money">{fmtMoney(totals?.balance_remaining)}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ===== SIGNATURES ===== */}
+      <div className="rpdoc-sign">
+        <div className="signcol">
+          <div className="line" />
+          <div className="label">Signature</div>
+          <div className="meta">Prepared by: {preparedBy || ""}</div>
+        </div>
+
+        <div className="signcol">
+          <div className="line" />
+          <div className="label">Signature</div>
+          <div className="meta">Delivered by: {deliveredBy || ""}</div>
+        </div>
+
+        <div className="signcol">
+          <div className="line" />
+          <div className="label">Customer Signature</div>
+          <div className="meta">
+            Customer Name: __________________
+            <br />
+            <i>Please verify before sign</i>
+          </div>
+        </div>
+      </div>
+
+      {/* ✅ IMPORTANT: keep the same bottom spacing as screenshot, but NO red thank-you bar */}
+      <div className="rpdoc-footerSpace" />
     </div>
   );
 }

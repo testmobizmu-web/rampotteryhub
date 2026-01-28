@@ -23,25 +23,74 @@ const COMPANY = {
 };
 
 type Customer = { id: number; name: string; customer_code: string | null };
-type Product = { id: number; sku: string | null; name: string | null; selling_price: number | null };
+
+/**
+ * ✅ Important:
+ * - I added units_per_box because Invoice needs it.
+ * - If your DB column is different, tell me the exact name and I will switch it.
+ */
+type Product = {
+  id: number;
+  sku: string | null;
+  name: string | null;
+  selling_price: number | null;
+  units_per_box?: number | null; // optional
+  unit_per_box?: number | null; // fallback alt name (if exists)
+};
+
+type UOM = "BOX" | "PCS";
 
 type CNItem = {
   id: number;
+
   productId: string;
   sku: string;
   description: string;
-  qty: number;
+
+  uom: UOM;
+  box_qty: number; // the qty typed in the UOM+Qty cell (BOX count or PCS count)
+
+  units_per_box: number; // auto from product (default 1)
+  total_qty: number; // auto computed
+
   unitExcl: number;
   unitVat: number;
   unitIncl: number;
   lineTotal: number;
 };
 
+function n2(v: any) {
+  const x = Number(v ?? 0);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function round2(n: number) {
+  return +n.toFixed(2);
+}
+
+function computeTotalQty(uom: UOM, boxQty: number, unitsPerBox: number) {
+  const q = n2(boxQty);
+  const upb = Math.max(1, n2(unitsPerBox));
+  if (uom === "BOX") return Math.max(0, Math.floor(q) * upb);
+  return Math.max(0, Math.floor(q));
+}
+
 function recalc(item: CNItem): CNItem {
-  const unitVat = +(item.unitExcl * VAT_RATE).toFixed(2);
-  const unitIncl = +(item.unitExcl + unitVat).toFixed(2);
-  const lineTotal = +(unitIncl * (item.qty || 0)).toFixed(2);
-  return { ...item, unitVat, unitIncl, lineTotal };
+  const unitsPerBox = Math.max(1, n2(item.units_per_box));
+  const totalQty = computeTotalQty(item.uom, item.box_qty, unitsPerBox);
+
+  const unitVat = round2(n2(item.unitExcl) * VAT_RATE);
+  const unitIncl = round2(n2(item.unitExcl) + unitVat);
+  const lineTotal = round2(unitIncl * totalQty);
+
+  return {
+    ...item,
+    units_per_box: unitsPerBox,
+    total_qty: totalQty,
+    unitVat,
+    unitIncl,
+    lineTotal,
+  };
 }
 
 function money(n: number) {
@@ -54,6 +103,24 @@ function fmtDateTime(d: Date) {
     d.getSeconds()
   )}`;
 }
+
+function blankRow(id: number): CNItem {
+  return recalc({
+    id,
+    productId: "",
+    sku: "",
+    description: "",
+    uom: "BOX",       // ✅ default BOX
+    box_qty: 0,
+    units_per_box: 1,
+    total_qty: 0,
+    unitExcl: 0,
+    unitVat: 0,
+    unitIncl: 0,
+    lineTotal: 0,
+  });
+}
+
 
 export default function CreditNoteNewClient() {
   const router = useRouter();
@@ -81,19 +148,7 @@ export default function CreditNoteNewClient() {
 
   const [saving, setSaving] = useState(false);
 
-  const [items, setItems] = useState<CNItem[]>([
-    recalc({
-      id: 1,
-      productId: "",
-      sku: "",
-      description: "",
-      qty: 0,
-      unitExcl: 0,
-      unitVat: 0,
-      unitIncl: 0,
-      lineTotal: 0,
-    }),
-  ]);
+  const [items, setItems] = useState<CNItem[]>([blankRow(1)]);
 
   // refs for fast data entry
   const customerRef = useRef<HTMLSelectElement | null>(null);
@@ -123,7 +178,7 @@ export default function CreditNoteNewClient() {
     };
   }, [mobileNavOpen]);
 
-  // ESC closes drawer; Enter saves (when not typing in textarea)
+  // ESC closes drawer; Ctrl/⌘ + Enter saves
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
@@ -137,6 +192,7 @@ export default function CreditNoteNewClient() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mobileNavOpen, items, customerId, creditNoteDate, invoiceId, reason]);
 
   // load customers/products
@@ -147,12 +203,17 @@ export default function CreditNoteNewClient() {
         const { data: c } = await supabase.from("customers").select("id, name, customer_code").order("name");
         setCustomers((c ?? []) as Customer[]);
 
-        const { data: p } = await supabase.from("products").select("id, sku, name, selling_price").order("sku");
+        // ✅ include units_per_box if it exists; if not, supabase just ignores it
+        const { data: p } = await supabase
+          .from("products")
+          .select("id, sku, name, selling_price, units_per_box, unit_per_box")
+          .order("sku");
+
         setProducts((p ?? []) as Product[]);
       } finally {
         setLoadingLists(false);
         setLastSync(fmtDateTime(new Date()));
-        window.setTimeout(() => customerRef.current?.focus(), 120); // ✅ autofocus customer
+        window.setTimeout(() => customerRef.current?.focus(), 120);
       }
     }
     load();
@@ -173,68 +234,55 @@ export default function CreditNoteNewClient() {
   }, [customerId, customers]);
 
   const totals = useMemo(() => {
-    const subtotal = items.reduce((s, r) => s + (r.qty || 0) * (r.unitExcl || 0), 0);
-    const vat = subtotal * VAT_RATE;
-    const total = subtotal + vat;
+    const subtotalEx = items.reduce((s, r) => s + n2(r.total_qty) * n2(r.unitExcl), 0);
+    const vat = subtotalEx * VAT_RATE;
+    const total = subtotalEx + vat;
+
     return {
-      subtotal: +subtotal.toFixed(2),
-      vat: +vat.toFixed(2),
-      total: +total.toFixed(2),
+      subtotal: round2(subtotalEx),
+      vat: round2(vat),
+      total: round2(total),
     };
   }, [items]);
 
-  const updateItem = (id: number, patch: Partial<CNItem>) => {
-    setItems((prev) => prev.map((r) => (r.id === id ? recalc({ ...r, ...patch }) : r)));
+  const setItem = (id: number, patch: Partial<CNItem>) => {
+    setItems((prev) => prev.map((r) => (r.id === id ? recalc({ ...r, ...patch } as CNItem) : r)));
   };
 
   const handleSelectProduct = (id: number, productId: string) => {
     const p = products.find((x) => x.id === Number(productId));
-    updateItem(id, {
-      productId,
-      sku: p?.sku || "",
-      description: p?.name || "",
-      unitExcl: Number(p?.selling_price || 0), // ✅ auto-fill price
-      qty: (p && items.find((x) => x.id === id)?.qty === 0) ? 1 : items.find((x) => x.id === id)?.qty || 0, // default qty=1 if empty
-    });
 
-    // ✅ auto-add next row if this was last row
+    const unitsPerBox =
+      Math.max(1, n2((p as any)?.units_per_box ?? (p as any)?.unit_per_box ?? 1));
+
+    // ✅ Keep current qty if already typed, else default to 1
+    const current = items.find((x) => x.id === id);
+    const nextBoxQty = current?.box_qty ? n2(current.box_qty) : 1;
+
+    setItem(id, {
+        productId,
+        sku: p?.sku || "",
+        description: p?.name || "",
+        unitExcl: n2(p?.selling_price || 0),
+        units_per_box: unitsPerBox,
+        box_qty: nextBoxQty,
+
+     // ✅ default to BOX only on first select (so it doesn't override user choice later)
+      uom: current?.productId ? current.uom : "BOX",
+   });
+
+
+    // ✅ auto-add next row if this was last row (invoice behavior)
     setItems((prev) => {
       const idx = prev.findIndex((x) => x.id === id);
       const isLast = idx === prev.length - 1;
       if (!isLast) return prev;
-      const nextId = prev.length + 1;
-      return [
-        ...prev,
-        recalc({
-          id: nextId,
-          productId: "",
-          sku: "",
-          description: "",
-          qty: 0,
-          unitExcl: 0,
-          unitVat: 0,
-          unitIncl: 0,
-          lineTotal: 0,
-        }),
-      ];
+      return [...prev, blankRow(prev.length + 1)];
     });
   };
 
   const addRow = () => {
-    setItems((prev) => [
-      ...prev,
-      recalc({
-        id: prev.length + 1,
-        productId: "",
-        sku: "",
-        description: "",
-        qty: 0,
-        unitExcl: 0,
-        unitVat: 0,
-        unitIncl: 0,
-        lineTotal: 0,
-      }),
-    ]);
+    setItems((prev) => [...prev, blankRow(prev.length + 1)]);
   };
 
   const removeRow = (id: number) => {
@@ -250,7 +298,7 @@ export default function CreditNoteNewClient() {
       return;
     }
 
-    const clean = items.filter((r) => r.productId && r.qty > 0);
+    const clean = items.filter((r) => r.productId && n2(r.total_qty) > 0);
     if (!clean.length) {
       showToast("Add at least 1 item with qty > 0 ⚠️");
       return;
@@ -267,16 +315,27 @@ export default function CreditNoteNewClient() {
           creditNoteDate,
           invoiceId: invoiceId ? Number(invoiceId) : null,
           reason: reason || null,
+
+          // ✅ snapshot totals
           subtotal: totals.subtotal,
           vatAmount: totals.vat,
           totalAmount: totals.total,
+
           items: clean.map((r) => ({
             product_id: Number(r.productId),
-            total_qty: r.qty,
-            unit_price_excl_vat: r.unitExcl,
-            unit_vat: r.unitVat,
-            unit_price_incl_vat: r.unitIncl,
-            line_total: r.lineTotal,
+
+            // ✅ invoice-like qty logic
+            total_qty: n2(r.total_qty),
+
+            unit_price_excl_vat: n2(r.unitExcl),
+            unit_vat: n2(r.unitVat),
+            unit_price_incl_vat: n2(r.unitIncl),
+            line_total: n2(r.lineTotal),
+
+            // optional: if your API supports it you can store uom + box_qty + units_per_box
+            // uom: r.uom,
+            // box_qty: r.box_qty,
+            // units_per_box: r.units_per_box,
           })),
         }),
       });
@@ -284,7 +343,6 @@ export default function CreditNoteNewClient() {
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || "Failed to create credit note");
 
-      // ✅ success toast before redirect
       showToast("Credit note created ✅");
       window.setTimeout(() => {
         router.push(`/credit-notes/${json.creditNoteId}`);
@@ -302,6 +360,12 @@ export default function CreditNoteNewClient() {
   const inputCls =
     "w-full h-[42px] rounded-2xl border border-[rgba(148,163,184,.35)] bg-[rgba(255,255,255,.92)] px-3 font-extrabold outline-none";
   const labelCls = "text-[12px] font-black tracking-wide text-[rgba(17,24,39,.85)]";
+
+  // ✅ invoice-like split input for UOM + Qty
+  const uomSelectCls =
+    "h-[42px] rounded-2xl border border-[rgba(148,163,184,.35)] bg-[rgba(255,255,255,.92)] px-3 font-extrabold outline-none";
+  const qtyInputCls =
+    "h-[42px] rounded-2xl border border-[rgba(148,163,184,.35)] bg-[rgba(255,255,255,.92)] px-3 font-extrabold outline-none text-right";
 
   return (
     <div className="rp-app">
@@ -457,7 +521,7 @@ export default function CreditNoteNewClient() {
           <section className="rp-exec rp-card-anim">
             <div className="rp-exec__left">
               <div className="rp-exec__title">New Credit Note</div>
-              <div className="rp-exec__sub">Auto-fill customer • product • prices • VAT 15%</div>
+              <div className="rp-exec__sub">Invoice-style BOX/PCS • Unit/Box auto • Total Qty auto • VAT 15%</div>
             </div>
             <div className="rp-exec__right">
               <span className={`rp-live ${saving ? "is-dim" : ""}`}>
@@ -610,7 +674,7 @@ export default function CreditNoteNewClient() {
                     <div className="rp-card-head rp-card-head--tight">
                       <div>
                         <div className="rp-card-title">Items</div>
-                        <div className="rp-card-sub">Select product → SKU/Name/Price auto-filled</div>
+                        <div className="rp-card-sub">Invoice-style: BOX/PCS + Qty → Unit/Box + Total Qty auto</div>
                       </div>
 
                       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -640,12 +704,23 @@ export default function CreditNoteNewClient() {
                               <tr>
                                 <th style={{ width: 70 }}>SN</th>
                                 <th style={{ minWidth: 280 }}>Product</th>
-                                <th style={{ minWidth: 260 }}>Description</th>
-                                <th className="rp-right" style={{ width: 120 }}>Qty</th>
-                                <th className="rp-right rp-col-hide-sm" style={{ width: 170 }}>Unit Excl</th>
+
+                                {/* ✅ invoice-like UOM+Qty */}
+                                <th style={{ width: 220 }}>BOX / PCS</th>
+
+                                {/* ✅ unit/box */}
+                                <th className="rp-right" style={{ width: 140 }}>Unit/Box</th>
+
+                                {/* ✅ total qty */}
+                                <th className="rp-right" style={{ width: 140 }}>Total Qty</th>
+
+                                <th style={{ minWidth: 280 }}>Description</th>
+
+                                <th className="rp-right rp-col-hide-sm" style={{ width: 150 }}>Unit Ex</th>
                                 <th className="rp-right rp-col-hide-sm" style={{ width: 120 }}>VAT</th>
-                                <th className="rp-right rp-col-hide-sm" style={{ width: 170 }}>Unit Incl</th>
-                                <th className="rp-right" style={{ width: 170 }}>Line Total</th>
+                                <th className="rp-right rp-col-hide-sm" style={{ width: 150 }}>Unit Incl</th>
+                                <th className="rp-right" style={{ width: 170 }}>Total</th>
+
                                 <th style={{ width: 90 }} />
                               </tr>
                             </thead>
@@ -653,7 +728,9 @@ export default function CreditNoteNewClient() {
                             <tbody>
                               {items.map((r, i) => (
                                 <tr key={r.id} className="rp-row-hover">
-                                  <td className="rp-strong" style={{ textAlign: "center" }}>{i + 1}</td>
+                                  <td className="rp-strong" style={{ textAlign: "center" }}>
+                                    {i + 1}
+                                  </td>
 
                                   <td>
                                     <select
@@ -668,47 +745,59 @@ export default function CreditNoteNewClient() {
                                         </option>
                                       ))}
                                     </select>
+
                                     <div className="rp-muted" style={{ marginTop: 6, fontWeight: 900 }}>
                                       SKU: <b style={{ fontWeight: 1000 }}>{r.sku || "—"}</b>
                                     </div>
+                                  </td>
 
-                                    {/* mobile price view */}
-                                    <div className="rp-only-sm" style={{ marginTop: 8 }}>
-                                      <div className="rp-mini-row">
-                                        <span>Unit</span>
-                                        <b>{money(r.unitExcl)}</b>
-                                      </div>
-                                      <div className="rp-mini-row">
-                                        <span>Line</span>
-                                        <b>{money(r.lineTotal)}</b>
-                                      </div>
+                                  {/* ✅ UOM + Qty */}
+                                  <td>
+                                    <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8 }}>
+                                      <select
+                                        className={uomSelectCls}
+                                        value={r.uom}
+                                        onChange={(e) => setItem(r.id, { uom: e.target.value as UOM })}
+                                      >
+                                        <option value="BOX">BOX</option>
+                                        <option value="PCS">PCS</option>
+                                      </select>
+
+                                      <input
+                                        className={qtyInputCls}
+                                        inputMode="numeric"
+                                        value={r.box_qty}
+                                        onChange={(e) => setItem(r.id, { box_qty: n2(e.target.value) })}
+                                      />
                                     </div>
                                   </td>
 
-                                  <td style={{ fontWeight: 850 }}>{r.description || "—"}</td>
-
-                                  <td className="rp-right">
-                                    <input
-                                      className={inputCls}
-                                      style={{ textAlign: "right" } as any}
-                                      inputMode="numeric"
-                                      value={r.qty}
-                                      onChange={(e) => updateItem(r.id, { qty: Number(e.target.value) || 0 })}
-                                    />
+                                  {/* ✅ Unit/Box */}
+                                  <td className="rp-right rp-strong" style={{ fontVariantNumeric: "tabular-nums" }}>
+                                    {r.uom === "BOX" ? r.units_per_box : "—"}
                                   </td>
 
+                                  {/* ✅ Total Qty */}
+                                  <td className="rp-right rp-strong" style={{ fontVariantNumeric: "tabular-nums" }}>
+                                    {r.total_qty}
+                                  </td>
+
+                                  {/* ✅ Description auto */}
+                                  <td style={{ fontWeight: 850 }}>{r.description || "—"}</td>
+
+                                  {/* ✅ Unit Ex */}
                                   <td className="rp-right rp-col-hide-sm">
                                     <input
-                                      className={inputCls}
-                                      style={{ textAlign: "right" } as any}
+                                      className={qtyInputCls}
                                       inputMode="decimal"
                                       value={r.unitExcl}
-                                      onChange={(e) => updateItem(r.id, { unitExcl: Number(e.target.value) || 0 })}
+                                      onChange={(e) => setItem(r.id, { unitExcl: n2(e.target.value) })}
                                     />
                                   </td>
 
                                   <td className="rp-right rp-col-hide-sm rp-strong">{money(r.unitVat)}</td>
                                   <td className="rp-right rp-col-hide-sm rp-strong">{money(r.unitIncl)}</td>
+
                                   <td className="rp-right rp-strong">{money(r.lineTotal)}</td>
 
                                   <td style={{ textAlign: "right" }}>
@@ -728,7 +817,7 @@ export default function CreditNoteNewClient() {
                       {/* Totals bar */}
                       <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 340px", gap: 12, alignItems: "start" }}>
                         <div className="rp-muted" style={{ fontWeight: 900 }}>
-                          Tip: Select a product → price fills automatically. Ctrl/⌘+Enter to save.
+                          Tip: Select product → Unit Ex fills. Choose BOX/PCS → Total Qty updates instantly.
                         </div>
 
                         <div className="rp-card" style={{ margin: 0 }}>

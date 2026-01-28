@@ -9,13 +9,15 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^143.0.4",
     "@supabase/supabase-js": "^2.87.1",
     "bcryptjs": "^3.0.3",
     "chart.js": "^4.5.1",
     "dotenv": "^17.2.3",
-    "next": "^16.0.10",
+    "next": "^16.1.5",
     "papaparse": "^5.5.3",
     "pdf-lib": "^1.17.1",
+    "puppeteer-core": "^24.36.0",
     "react": "19.2.1",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "19.2.1",

@@ -41,8 +41,13 @@ type SalesMonthPoint = { ym: string; label: string; total: number };
 
 function formatRs(n: number) {
   const v = Number.isFinite(n) ? n : 0;
-  return `Rs ${v.toFixed(2)}`;
+  const nf = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  });
+  return `Rs ${nf.format(v)}`;
 }
+
 
 function fmtDateTime(d: Date) {
   const pad = (x: number) => String(x).padStart(2, "0");
@@ -330,7 +335,8 @@ export default function DashboardPage() {
       className="rp-side-card rp-card-anim"
       style={{
         // ✅ make sidebar background longer and footer stick to bottom
-        minHeight: "calc(100vh - 28px)",
+        minHeight: "100vh",
+        paddingBottom: 18,
         display: "flex",
         flexDirection: "column",
       }}

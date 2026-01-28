@@ -59,14 +59,14 @@ export async function POST(
     }
 
     // Delete customers created in this batch (requires customers.import_batch_id)
-    const { error: delErr } = await supabase
-      .from("customers")
-      .delete()
-      .eq("import_batch_id", batchId);
+    const { error: archErr } = await supabase
+    .from("customers")
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq("import_batch_id", batchId);
 
-    if (delErr) {
-      return NextResponse.json({ ok: false, error: delErr.message }, { status: 500 });
-    }
+  if (archErr) {
+    return NextResponse.json({ ok: false, error: archErr.message }, { status: 500 });
+  }
 
     // Mark batch rolled back (optional fields)
     await supabase

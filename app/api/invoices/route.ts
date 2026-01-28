@@ -27,25 +27,26 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await supabase
       .from("invoices")
-      .select(
-        `
-        id,
-        invoice_number,
-        invoice_date,
-
-        total_amount,
-        amount_paid,
-        balance_due,
-        balance_remaining,
-
-        discount_percent,
-        discount_amount,
-
-        status,
-        customers ( name, customer_code )
-      `
-      )
-      .order("id", { ascending: false });
+       .select(`
+         id,
+         invoice_number,
+         invoice_date,
+         customer_id,
+         total_amount,
+         gross_total,
+         amount_paid,
+         balance_remaining,
+         status,
+         discount_percent,
+         discount_amount,
+         customers (
+         name,
+         customer_code,
+         whatsapp,
+         phone
+       )
+    `)
+     .order("id", { ascending: false });
 
     if (error) throw error;
 

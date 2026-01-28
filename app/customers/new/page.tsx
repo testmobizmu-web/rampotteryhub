@@ -69,14 +69,49 @@ export default function AddCustomerPage() {
   const [err, setErr] = useState<string | null>(null);
 
   const [form, setForm] = useState({
-    customer_code: "",
-    name: "",
-    phone: "",
-    email: "",
-    address: "",
-    opening_balance: "0.00",
-    client: "",
-  });
+  customer_code: "",
+  client: "",
+
+  // ✅ new fields
+  client_name: "",
+  brn: "",
+  vat_no: "",
+  discount_percent: "0",
+  whatsapp: "",
+
+  name: "",
+  phone: "",
+  email: "",
+  address: "",
+  opening_balance: "0.00",
+});
+
+
+  function digitsOnly(v: string) {
+  return String(v || "").replace(/[^\d]/g, "");
+}
+
+// Mauritius only: stored as "230" + 8 digits => 11 digits total
+
+function normalizeMuWhatsApp(raw: string) {
+  const d = digitsOnly(raw);
+
+  if (!d) return ""; // optional
+
+  if (d.length === 8) return "230" + d;
+  if (d.startsWith("230") && d.length === 11) return d;
+
+  return d; // keep to show user what's wrong
+}
+
+function isValidMuWhatsApp(raw: string) {
+  const d = normalizeMuWhatsApp(raw);
+  if (!d) return true; // optional
+  return d.startsWith("230") && d.length === 11;
+}
+
+
+
 
   function update<K extends keyof typeof form>(k: K, v: string) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -169,16 +204,25 @@ export default function AddCustomerPage() {
         return;
       }
 
-      setLoading(true);
-      setErr(null);
+      const waNormalized = normalizeMuWhatsApp(form.whatsapp);
 
-      await rpFetch("/api/customers/create", {
-        method: "POST",
-        body: JSON.stringify({
-          ...form,
-          opening_balance: Number(form.opening_balance || 0),
-        }),
-      });
+      if (!isValidMuWhatsApp(form.whatsapp)) {
+      setErr(
+     "Invalid WhatsApp number. Mauritius only: 8 digits (e.g. 58277852) or 230 + 8 digits (e.g. 23058277852)."
+   );
+  submittingRef.current = false;
+  return;
+}
+
+await rpFetch("/api/customers/create", {
+  method: "POST",
+  body: JSON.stringify({
+    ...form,
+    whatsapp: waNormalized || null,
+    discount_percent: Number(form.discount_percent || 0),
+    opening_balance: Number(form.opening_balance || 0),
+  }),
+});
 
       showToast("Customer created ✅");
       window.setTimeout(() => router.push("/customers"), 650);
@@ -483,6 +527,67 @@ export default function AddCustomerPage() {
           onChange={(e) => update("customer_code", e.target.value)}
         />
       </label>
+     <label className="rp-field">
+  <span className="rp-label">Client Name</span>
+  <input
+    className="rp-input"
+    value={form.client_name}
+    onChange={(e) => update("client_name", e.target.value)}
+    placeholder="e.g. Mr Sunil / ABC Group"
+  />
+</label>
+
+<label className="rp-field">
+  <span className="rp-label">WhatsApp</span>
+  <input
+    className="rp-input"
+    value={form.whatsapp}
+    onChange={(e) => update("whatsapp", e.target.value)}
+    onBlur={() => {
+      // ✅ auto-format on blur (nice UX)
+      update("whatsapp", normalizeMuWhatsApp(form.whatsapp));
+    }}
+    placeholder="e.g. 58277852 or 23058277852"
+  />
+  <div className="rp-muted" style={{ marginTop: 6, fontWeight: 900 }}>
+    {form.whatsapp ? `Saved as: ${normalizeMuWhatsApp(form.whatsapp)}` : "Optional"}
+  </div>
+</label>
+
+
+<label className="rp-field">
+  <span className="rp-label">BRN</span>
+  <input
+    className="rp-input"
+    value={form.brn}
+    onChange={(e) => update("brn", e.target.value)}
+    placeholder="e.g. C17144377"
+  />
+</label>
+
+<label className="rp-field">
+  <span className="rp-label">VAT No</span>
+  <input
+    className="rp-input"
+    value={form.vat_no}
+    onChange={(e) => update("vat_no", e.target.value)}
+    placeholder="e.g. VAT123456"
+  />
+</label>
+
+<label className="rp-field">
+  <span className="rp-label">Discount %</span>
+  <input
+    className="rp-input"
+    type="number"
+    step="0.01"
+    value={form.discount_percent}
+    onChange={(e) => update("discount_percent", e.target.value)}
+    placeholder="0"
+  />
+</label>
+
+      
 
       {/* ✅ MOVED UP: Client / Category ABOVE Customer Name */}
       <label className="rp-field">

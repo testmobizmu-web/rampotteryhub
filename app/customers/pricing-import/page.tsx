@@ -5,35 +5,36 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-type CustomerImportRow = {
+type ImportFileType = "CSV" | "XLSX";
+
+type CustomerPreviewRow = {
   rowNo: number;
   customer_code: string;
-  name: string;
+  customer_name: string;
+  client_name: string;
   address: string;
-  phone: string;
+  phone_no: string;
+  whatsapp_no: string;
   brn: string;
   vat_no: string;
-  whatsapp: string;
   error?: string;
 };
 
-type ImportFileType = "CSV" | "XLSX";
-
-type ImportHistoryEntry = {
+type Batch = {
   id: string;
-  ts: number;
-  fileName: string;
-  fileType: ImportFileType;
-  totalRows: number;
-  validRows: number;
-  imported: number;
-  failed: number;
-  notes?: string;
+  created_at?: string;
+  created_by?: string;
+  filename?: string;
+  file_type?: string;
+  file_size?: number;
+  mode?: string;
+  row_count?: number;
+  valid_count?: number;
+  error_count?: number;
+  status?: string;
+  rolled_back_at?: string | null;
 };
 
-const HISTORY_KEY = "rp_import_history_customers_v1";
-
-/** ✅ Best-practice guards */
 const MAX_FILE_MB = 8;
 const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
 const ALLOWED_EXT = [".csv", ".xlsx", ".xls"] as const;
@@ -59,60 +60,20 @@ function n0(v: any): number {
   return Number.isFinite(num) ? num : 0;
 }
 
-function normalizeFileType(v: any): ImportFileType {
-  const s = String(v || "").toUpperCase();
-  return s === "XLSX" ? "XLSX" : "CSV";
-}
-
-function loadHistory(): ImportHistoryEntry[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (!raw) return [];
-
-    const parsed: any = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed
-      .filter(Boolean)
-      .map((x: any): ImportHistoryEntry => ({
-        id: String(x.id || ""),
-        ts: n0(x.ts),
-        fileName: String(x.fileName || x.filename || ""),
-        fileType: normalizeFileType(x.fileType),
-        totalRows: n0(x.totalRows),
-        validRows: n0(x.validRows),
-        imported: n0(x.imported),
-        failed: n0(x.failed),
-        notes: x.notes ? String(x.notes) : undefined,
-      }))
-      .filter((h) => h.id && h.ts)
-      .sort((a, b) => b.ts - a.ts)
-      .slice(0, 20);
-  } catch {
-    return [];
-  }
-}
-
-function saveHistory(list: ImportHistoryEntry[]) {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 20)));
-  } catch {}
-}
-
-function fmtTime(ts: number) {
-  try {
-    const d = new Date(ts);
-    return d.toLocaleString();
-  } catch {
-    return String(ts);
-  }
-}
-
 function fmtDateTime(d: Date) {
   const pad = (x: number) => String(x).padStart(2, "0");
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(d.getHours())}:${pad(
     d.getMinutes()
   )}:${pad(d.getSeconds())}`;
+}
+
+function fmtTime(isoOrTs: any) {
+  try {
+    const d = typeof isoOrTs === "string" ? new Date(isoOrTs) : new Date(Number(isoOrTs));
+    return d.toLocaleString();
+  } catch {
+    return String(isoOrTs || "");
+  }
 }
 
 /** Small CSV parser (supports quotes, commas, CRLF, tab-separated fallback) */
@@ -193,12 +154,11 @@ async function isZipLike(file: File): Promise<boolean> {
   }
 }
 
-/** ✅ Basic client-side file guard (type + size) */
+/** Basic client-side file guard (type + size) */
 async function guardFile(
   file: File
 ): Promise<{ ok: true; kind: ImportFileType } | { ok: false; error: string }> {
   const name = (file.name || "").toLowerCase().trim();
-
   if (!name) return { ok: false, error: "Invalid file name." };
 
   if (file.size > MAX_FILE_BYTES) {
@@ -228,27 +188,35 @@ export default function CustomerImportPage() {
   const [isAdmin, setIsAdmin] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
 
-  const [rows, setRows] = useState<CustomerImportRow[]>([]);
+  const [rows, setRows] = useState<CustomerPreviewRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
-  const [history, setHistory] = useState<ImportHistoryEntry[]>([]);
+  // ✅ server batches
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [loadingBatches, setLoadingBatches] = useState(false);
 
-  // keep selected file info even after we reset <input>.value
+  // keep selected file info
   const [pickedFileName, setPickedFileName] = useState<string>("");
   const [pickedFileType, setPickedFileType] = useState<ImportFileType>("CSV");
+  const [pickedFileSize, setPickedFileSize] = useState<number>(0);
 
-  // success toast
+  // ✅ toggle: delete all existing customers before import
+  const [clearExisting, setClearExisting] = useState<boolean>(true);
+
+  // ✅ raw row objects sent to API
+  const [apiRows, setApiRows] = useState<Record<string, any>[]>([]);
+
+  // toast
   const [toast, setToast] = useState<string | null>(null);
   function showToast(msg: string) {
     setToast(msg);
-    window.setTimeout(() => setToast(null), 2400);
+    window.setTimeout(() => setToast(null), 2600);
   }
 
   useEffect(() => {
-    // theme
     const saved = localStorage.getItem("rp_theme");
     const initial = saved === "dark" ? "dark" : "light";
     setTheme(initial);
@@ -265,11 +233,13 @@ export default function CustomerImportPage() {
       const admin = role.toLowerCase() === "admin";
       setUserRole(role || "—");
       setIsAdmin(admin);
-      setHistory(loadHistory());
       setLastSync(fmtDateTime(new Date()));
+      // fetch batches once on load
+      void refreshBatches();
     } catch {
       router.replace("/login");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   function toggleTheme() {
@@ -288,6 +258,25 @@ export default function CustomerImportPage() {
     }
   }
 
+  async function refreshBatches() {
+    setLoadingBatches(true);
+    try {
+      const raw = localStorage.getItem("rp_user") || "";
+      const res = await fetch("/api/customers/import-batches", {
+        method: "GET",
+        headers: { "x-rp-user": raw },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || "Failed to load batches");
+      setBatches(Array.isArray(json.batches) ? json.batches : []);
+    } catch (e: any) {
+      // non-blocking
+      console.warn(e?.message || e);
+    } finally {
+      setLoadingBatches(false);
+    }
+  }
+
   const summary = useMemo(() => {
     const total = rows.length;
     const ok = rows.filter((r) => !r.error).length;
@@ -299,7 +288,7 @@ export default function CustomerImportPage() {
     const s = q.trim().toLowerCase();
     if (!s) return rows;
     return rows.filter((r) =>
-      `${r.customer_code} ${r.name} ${r.phone} ${r.whatsapp} ${r.vat_no} ${r.brn}`
+      `${r.customer_code} ${r.customer_name} ${r.client_name} ${r.phone_no} ${r.whatsapp_no} ${r.vat_no} ${r.brn}`
         .toLowerCase()
         .includes(s)
     );
@@ -308,18 +297,22 @@ export default function CustomerImportPage() {
   function openImport() {
     setErr(null);
     setRows([]);
+    setApiRows([]);
     setQ("");
     setPickedFileName("");
     setPickedFileType("CSV");
+    setPickedFileSize(0);
+    setClearExisting(true);
     setImportOpen(true);
     setTimeout(() => fileRef.current?.click(), 120);
   }
 
   function downloadTemplate() {
+    // ✅ new format
     const csv = [
-      "customer_code,name,address,phone,brn,vat_no,whatsapp",
-      "CUST-001,Ram Trading Ltd,Royal Road Port Louis,51234567,BRN12345678,VAT123456,58277852",
-      "CUST-002,Blue Stone Co,Quatre Bornes,59887766,BRN99887766,VAT998877,59000000",
+      "customer_code,customer_name,client_name,address,phone_no,whatsapp_no,brn,vat_no",
+      "CUST-001,Ram Trading Ltd,Ram Group,Royal Road Port Louis,51234567,58277852,BRN12345678,VAT123456",
+      "CUST-002,Blue Stone Co,Blue Group,Quatre Bornes,59887766,59000000,BRN99887766,VAT998877",
     ].join("\n");
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -333,7 +326,11 @@ export default function CustomerImportPage() {
     URL.revokeObjectURL(url);
   }
 
-  function mapMatrixToRows(matrix: any[][]): CustomerImportRow[] {
+  /** Turn matrix into:
+   *  1) client preview rows (nice UI fields)
+   *  2) apiRows (objects keyed by headers) for server DRY_RUN/IMPORT
+   */
+  function mapMatrix(matrix: any[][]): { preview: CustomerPreviewRow[]; apiRows: Record<string, any>[] } {
     if (!matrix || matrix.length < 2) {
       throw new Error("File is empty. Add at least one data row.");
     }
@@ -341,66 +338,82 @@ export default function CustomerImportPage() {
     const headers = (matrix[0] || []).map((h) => normalizeHeader(h));
     const idx = (key: string) => headers.findIndex((h) => h === key);
 
+    // ✅ required in YOUR new excel
     const idxCode = idx("customer_code");
-    const idxName = idx("name");
+    const idxName = idx("customer_name");
+    const idxClient = idx("client_name");
     const idxAddress = idx("address");
-    const idxPhone = idx("phone");
+    const idxPhone = idx("phone_no");
+    const idxWa = idx("whatsapp_no");
     const idxBrn = idx("brn");
     const idxVat = idx("vat_no");
-    const idxWa = idx("whatsapp");
 
     const required = [
       ["customer_code", idxCode],
-      ["name", idxName],
+      ["customer_name", idxName],
+      ["client_name", idxClient],
       ["address", idxAddress],
-      ["phone", idxPhone],
+      ["phone_no", idxPhone],
+      ["whatsapp_no", idxWa],
       ["brn", idxBrn],
       ["vat_no", idxVat],
-      ["whatsapp", idxWa],
     ] as const;
 
     const missing = required.filter(([, i]) => i === -1).map(([k]) => k);
     if (missing.length) {
       throw new Error(
-        `Missing column(s): ${missing.join(
-          ", "
-        )}\nRequired columns: customer_code, name, address, phone, brn, vat_no, whatsapp`
+        `Missing column(s): ${missing.join(", ")}\nRequired columns: customer_code, customer_name, client_name, address, phone_no, whatsapp_no, brn, vat_no`
       );
     }
 
-    const parsed: CustomerImportRow[] = [];
+    const preview: CustomerPreviewRow[] = [];
+    const outApiRows: Record<string, any>[] = [];
 
     for (let i = 1; i < matrix.length; i++) {
       const r = matrix[i] || [];
       const rowNo = i;
 
       const customer_code = safeUpper(r[idxCode]);
-      const name = str(r[idxName]);
+      const customer_name = str(r[idxName]);
+      const client_name = str(r[idxClient]);
       const address = str(r[idxAddress]);
-      const phone = str(r[idxPhone]);
+      const phone_no = str(r[idxPhone]);
+      const whatsapp_no = str(r[idxWa]);
       const brn = str(r[idxBrn]);
       const vat_no = str(r[idxVat]);
-      const whatsapp = str(r[idxWa]);
 
-      const row: CustomerImportRow = {
+      const row: CustomerPreviewRow = {
         rowNo,
         customer_code,
-        name,
+        customer_name,
+        client_name,
         address,
-        phone,
+        phone_no,
+        whatsapp_no,
         brn,
         vat_no,
-        whatsapp,
       };
 
+      // client-side guard (server will re-check)
       if (!customer_code) row.error = "Missing customer_code";
-      else if (!name) row.error = "Missing name";
-      else if (!phone && !whatsapp) row.error = "Provide phone or whatsapp";
+      else if (!customer_name) row.error = "Missing customer_name";
 
-      parsed.push(row);
+      preview.push(row);
+
+      // api object uses header keys exactly as normalized
+      outApiRows.push({
+        customer_code,
+        customer_name,
+        client_name,
+        address,
+        phone_no,
+        whatsapp_no,
+        brn,
+        vat_no,
+      });
     }
 
-    return parsed;
+    return { preview, apiRows: outApiRows };
   }
 
   async function parseCsvFile(file: File): Promise<any[][]> {
@@ -428,11 +441,11 @@ export default function CustomerImportPage() {
   async function handleFile(file: File) {
     setErr(null);
     setRows([]);
+    setApiRows([]);
     setQ("");
 
-    // store file details before we reset the input value
-    const name = (file.name || "").trim() || "customers_import";
-    setPickedFileName(name);
+    setPickedFileName((file.name || "").trim() || "customers_import");
+    setPickedFileSize(file.size);
 
     const guard = await guardFile(file);
     if (!guard.ok) {
@@ -443,99 +456,101 @@ export default function CustomerImportPage() {
 
     try {
       const matrix = guard.kind === "CSV" ? await parseCsvFile(file) : await parseXlsxFile(file);
-      const parsed = mapMatrixToRows(matrix);
-      setRows(parsed);
+      const { preview, apiRows: outApiRows } = mapMatrix(matrix);
+      setRows(preview);
+      setApiRows(outApiRows);
     } catch (e: any) {
       setErr(e?.message || "Failed to read file.");
     }
   }
 
-  async function runImport() {
+  async function callBulk(mode: "DRY_RUN" | "IMPORT") {
     setErr(null);
 
-    if (!isAdmin) {
+    if (!isAdmin && mode === "IMPORT") {
       setErr("Locked: only Admin can import customers.");
       return;
     }
-
-    const okRows = rows.filter((r) => !r.error);
-    if (okRows.length === 0) {
-      setErr("No valid rows to import.");
+    if (!apiRows.length) {
+      setErr("No rows loaded.");
       return;
     }
 
-    setImporting(true);
+    setIsImporting(true);
 
-    const raw = localStorage.getItem("rp_user") || "";
-
-    // Controlled concurrency (fast + safe)
-    const concurrency = 8;
-    let imported = 0;
-    let failed = 0;
-
-    async function postOne(r: CustomerImportRow) {
-      const res = await fetch("/api/customers/create", {
+    try {
+      const raw = localStorage.getItem("rp_user") || "";
+      const res = await fetch("/api/customers/bulk-import", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-rp-user": raw },
         body: JSON.stringify({
-          customer_code: r.customer_code,
-          name: r.name,
-          address: r.address,
-          phone: r.phone,
-          brn: r.brn,
-          vat_no: r.vat_no,
-          whatsapp: r.whatsapp,
+          mode,
+          clearExisting: mode === "IMPORT" ? clearExisting : false, // DRY_RUN never deletes
+          filename: pickedFileName || "customers_import",
+          fileType: pickedFileType,
+          fileSize: pickedFileSize,
+          rows: apiRows,
         }),
       });
 
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json.ok) throw new Error(json.error || "Failed");
-      return true;
-    }
+      if (!res.ok || !json.ok) throw new Error(json.error || "Request failed");
 
-    const queue = okRows.slice();
-    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-      while (queue.length) {
-        const r = queue.shift();
-        if (!r) break;
-        try {
-          await postOne(r);
-          imported++;
-        } catch {
-          failed++;
-        }
+      if (mode === "DRY_RUN") {
+        const s = json.summary || {};
+        showToast(`Dry run ✅ Rows: ${n0(s.rowCount)} • Valid: ${n0(s.validCount)} • Errors: ${n0(s.errorCount)}`);
+
+        // If server returns preview/errors, reflect them into UI rows (optional)
+        // We’ll keep your local preview, but show server header acceptance via toast.
+        return;
       }
-    });
 
-    await Promise.all(workers);
+      // IMPORT success
+      const s = json.summary || {};
+      const batchId = String(json.batchId || "");
+      showToast(
+        `Import done ✅  Batch: ${batchId || "—"}  Rows: ${n0(s.rowCount)}  Valid: ${n0(s.validCount)}  Errors: ${n0(
+          s.errorCount
+        )}`
+      );
 
-    setImporting(false);
+      // close + reset
+      setImportOpen(false);
+      setRows([]);
+      setApiRows([]);
+      setQ("");
+      setPickedFileName("");
+      setPickedFileType("CSV");
+      setPickedFileSize(0);
+      setLastSync(fmtDateTime(new Date()));
 
-    const entry: ImportHistoryEntry = {
-      id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      ts: Date.now(),
-      fileName: pickedFileName || "customers_import",
-      fileType: pickedFileType,
-      totalRows: rows.length,
-      validRows: okRows.length,
-      imported,
-      failed,
-      notes: failed ? "Some rows failed. Re-check duplicates / DB constraints." : "Success",
-    };
+      // refresh server batches
+      await refreshBatches();
+    } catch (e: any) {
+      setErr(e?.message || "Bulk import failed");
+    } finally {
+      setIsImporting(false);
+    }
+  }
 
-    const nextHistory = [entry, ...history].slice(0, 20);
-    setHistory(nextHistory);
-    saveHistory(nextHistory);
-
-    showToast(`Import done ✅  Imported: ${imported}  Failed: ${failed}`);
-
-    // close + reset
-    setImportOpen(false);
-    setRows([]);
-    setQ("");
-    setPickedFileName("");
-    setPickedFileType("CSV");
-    setLastSync(fmtDateTime(new Date()));
+  async function rollbackBatch(batchId: string) {
+    if (!isAdmin) {
+      showToast("Admin only: rollback locked.");
+      return;
+    }
+    try {
+      const raw = localStorage.getItem("rp_user") || "";
+      const res = await fetch(`/api/customers/import-batches/${encodeURIComponent(batchId)}/rollback`, {
+        method: "POST",
+        headers: { "x-rp-user": raw },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) throw new Error(json.error || "Rollback failed");
+      showToast("Rollback done ✅");
+      await refreshBatches();
+    } catch (e: any) {
+      showToast(`Rollback failed: ${e?.message || "Error"}`);
+    }
   }
 
   return (
@@ -573,12 +588,7 @@ export default function CustomerImportPage() {
       <div className="rp-shell rp-enter">
         {/* Mobile top bar */}
         <div className="rp-mtop">
-          <button
-            type="button"
-            className="rp-icon-btn rp-burger"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open menu"
-          >
+          <button type="button" className="rp-icon-btn rp-burger" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
             <span aria-hidden="true">
               <i />
               <i />
@@ -597,11 +607,7 @@ export default function CustomerImportPage() {
         </div>
 
         {/* Overlay + Drawer */}
-        <button
-          className={`rp-overlay ${drawerOpen ? "is-open" : ""}`}
-          onClick={() => setDrawerOpen(false)}
-          aria-label="Close menu"
-        />
+        <button className={`rp-overlay ${drawerOpen ? "is-open" : ""}`} onClick={() => setDrawerOpen(false)} aria-label="Close menu" />
         <aside className={`rp-drawer ${drawerOpen ? "is-open" : ""}`}>
           <div className="rp-drawer-head">
             <div className="rp-drawer-brand">
@@ -630,12 +636,7 @@ export default function CustomerImportPage() {
                 { href: "/customers", label: "Customers" },
                 { href: "/reports", label: "Reports & Statements" },
               ].map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`}
-                  href={it.href}
-                  onClick={() => setDrawerOpen(false)}
-                >
+                <Link key={it.href} className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`} href={it.href} onClick={() => setDrawerOpen(false)}>
                   <span className="rp-ic3d" aria-hidden="true">
                     ▶
                   </span>
@@ -680,13 +681,7 @@ export default function CustomerImportPage() {
                 { href: "/customers", label: "Customers" },
                 { href: "/reports", label: "Reports & Statements" },
               ].map((it) => (
-                <Link
-                  key={it.href}
-                  className={`rp-nav-btn ${
-                    it.href === "/customers" ? "rp-nav-btn--active" : ""
-                  }`}
-                  href={it.href}
-                >
+                <Link key={it.href} className={`rp-nav-btn ${it.href === "/customers" ? "rp-nav-btn--active" : ""}`} href={it.href}>
                   <span className="rp-ic3d" aria-hidden="true">
                     ▶
                   </span>
@@ -741,15 +736,13 @@ export default function CustomerImportPage() {
           {/* Executive header */}
           <section className="rp-exec rp-card-anim">
             <div className="rp-exec__left">
-              <div className="rp-exec__title">Customer Pricing Import</div>
+              <div className="rp-exec__title">Customer Import</div>
               <div className="rp-exec__sub">
-                Upload <b>CSV / Excel</b> • Validate columns • Preview • Import (Admin only)
+                Upload <b>CSV / Excel</b> • Preview • <b>Dry Run</b> • Import • Rollback (Admin)
               </div>
             </div>
             <div className="rp-exec__right">
-              <span className={`rp-chip rp-chip--soft ${isAdmin ? "" : "rp-chip--warn"}`}>
-                {isAdmin ? "Admin enabled" : "Locked"}
-              </span>
+              <span className={`rp-chip rp-chip--soft ${isAdmin ? "" : "rp-chip--warn"}`}>{isAdmin ? "Admin enabled" : "Locked"}</span>
               <span className="rp-chip">Max {MAX_FILE_MB}MB</span>
             </div>
           </section>
@@ -764,7 +757,7 @@ export default function CustomerImportPage() {
             <div className="rp-kpi-pro__cell">
               <div className="rp-kpi-pro__title">Valid</div>
               <div className="rp-kpi-pro__value">{summary.ok}</div>
-              <div className="rp-kpi-pro__sub">Ready to import</div>
+              <div className="rp-kpi-pro__sub">Ready</div>
             </div>
             <div className="rp-kpi-pro__cell">
               <div className="rp-kpi-pro__title">Errors</div>
@@ -772,13 +765,13 @@ export default function CustomerImportPage() {
               <div className="rp-kpi-pro__sub">Fix and re-upload</div>
             </div>
             <div className="rp-kpi-pro__cell">
-              <div className="rp-kpi-pro__title">History</div>
-              <div className="rp-kpi-pro__value">{history.length}</div>
-              <div className="rp-kpi-pro__sub">Last 20 runs</div>
+              <div className="rp-kpi-pro__title">Batches</div>
+              <div className="rp-kpi-pro__value">{batches.length}</div>
+              <div className="rp-kpi-pro__sub">Server history</div>
             </div>
           </section>
 
-          {/* Actions (3D segment buttons like dashboard/invoices) */}
+          {/* Actions */}
           <section className="rp-actions rp-card-anim">
             <div className="rp-seg rp-seg--pro">
               <Link className="rp-seg-item rp-seg-item--brand" href="/customers">
@@ -810,156 +803,109 @@ export default function CustomerImportPage() {
                   Import Locked
                 </button>
               )}
+
+              <button className="rp-seg-item rp-seg-item--brand" type="button" onClick={refreshBatches} disabled={loadingBatches}>
+                <span className="rp-icbtn" aria-hidden="true">
+                  ↻
+                </span>
+                {loadingBatches ? "Refreshing…" : "Refresh Batches"}
+              </button>
             </div>
           </section>
 
-          {/* Locked notice */}
-          {!isAdmin && (
-            <section className="rp-card rp-card-anim" style={{ border: "1px solid rgba(255,107,107,.22)" }}>
-              <div className="rp-card-head rp-card-head--tight">
-                <div>
-                  <div className="rp-card-title">🔒 Import Locked</div>
-                  <div className="rp-card-sub">Only <b>Admin</b> can import customers. You can still download the template.</div>
-                </div>
-                <span className="rp-chip rp-chip--warn">Permission required</span>
+          {/* Import batches (server) */}
+          <section className="rp-card rp-card-anim">
+            <div className="rp-card-head rp-card-head--tight">
+              <div>
+                <div className="rp-card-title">Import Batches (Server)</div>
+                <div className="rp-card-sub">Each import creates a batch • Admin can rollback a batch</div>
               </div>
-              <div className="rp-card-body" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <span className="rp-status rp-status-cancelled">
-                  <span className="rp-status-dot" />
-                  No upload permissions
-                </span>
-                <span className="rp-status rp-status-issued">
-                  <span className="rp-status-dot" />
-                  Template download enabled
-                </span>
-              </div>
-            </section>
-          )}
+              <span className="rp-chip rp-chip--soft">{batches.length} record(s)</span>
+            </div>
 
-          {/* Import history */}
-          {/* Import history */}
-<section className="rp-card rp-card-anim">
-  <div className="rp-card-head rp-card-head--tight">
-    <div>
-      <div className="rp-card-title">Import History</div>
-      <div className="rp-card-sub">Stored locally on this device (last 20)</div>
-    </div>
-    <span className="rp-chip rp-chip--soft">{history.length} record(s)</span>
-  </div>
-
-  <div className="rp-card-body">
-    {history.length === 0 ? (
-      <div className="rp-td-empty">No imports yet.</div>
-    ) : (
-      <>
-        {/* ✅ Desktop table */}
-        <div className="rp-desktop-only rp-table-wrap">
-          <table className="rp-table rp-table--premium">
-            <thead>
-              <tr>
-                <th style={{ width: 190 }}>Date</th>
-                <th>File</th>
-                <th style={{ width: 90 }}>Type</th>
-                <th style={{ width: 110, textAlign: "right" }}>Rows</th>
-                <th style={{ width: 120, textAlign: "right" }}>Imported</th>
-                <th style={{ width: 100, textAlign: "right" }}>Failed</th>
-                <th style={{ width: 240 }}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((h) => (
-                <tr key={h.id}>
-                  <td className="rp-strong">{fmtTime(h.ts)}</td>
-                  <td className="rp-strong">{h.fileName}</td>
-                  <td>{h.fileType}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                    {h.validRows}/{h.totalRows}
-                  </td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{h.imported}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{h.failed}</td>
-                  <td>
-                    {h.failed ? (
-                      <span className="rp-status rp-status-pending">
-                        <span className="rp-status-dot" />
-                        {h.notes || "Partial"}
-                      </span>
-                    ) : (
-                      <span className="rp-status rp-status-approved">
-                        <span className="rp-status-dot" />
-                        {h.notes || "Success"}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* ✅ Mobile cards (Invoices-style) */}
-        <div className="rp-mobile-only rp-history-cards">
-          {history.map((h) => {
-            const ok = !h.failed;
-            return (
-              <div key={h.id} className="rp-history-card">
-                <div className="rp-history-card__top">
-                  <div className="rp-history-card__file">
-                    <div className="rp-strong" style={{ fontSize: 14, lineHeight: 1.2 }}>
-                      {h.fileName}
-                    </div>
-                    <div className="rp-muted" style={{ marginTop: 2 }}>
-                      {fmtTime(h.ts)} • {h.fileType}
-                    </div>
-                  </div>
-
-                  <div>
-                    {ok ? (
-                      <span className="rp-status rp-status-approved">
-                        <span className="rp-status-dot" />
-                        {h.notes || "Success"}
-                      </span>
-                    ) : (
-                      <span className="rp-status rp-status-pending">
-                        <span className="rp-status-dot" />
-                        {h.notes || "Partial"}
-                      </span>
-                    )}
-                  </div>
+            <div className="rp-card-body">
+              {batches.length === 0 ? (
+                <div className="rp-td-empty">No batches yet.</div>
+              ) : (
+                <div className="rp-table-wrap">
+                  <table className="rp-table rp-table--premium">
+                    <thead>
+                      <tr>
+                        <th style={{ width: 190 }}>Date</th>
+                        <th>File</th>
+                        <th style={{ width: 120 }}>By</th>
+                        <th style={{ width: 90 }}>Status</th>
+                        <th style={{ width: 120, textAlign: "right" }}>Rows</th>
+                        <th style={{ width: 140, textAlign: "right" }}>Valid</th>
+                        <th style={{ width: 120, textAlign: "right" }}>Errors</th>
+                        <th style={{ width: 160 }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batches.map((b) => {
+                        const status = String(b.status || "—");
+                        const rolled = Boolean(b.rolled_back_at);
+                        return (
+                          <tr key={b.id}>
+                            <td className="rp-strong">{fmtTime(b.created_at)}</td>
+                            <td className="rp-strong">{b.filename || "—"}</td>
+                            <td>{b.created_by || "—"}</td>
+                            <td>
+                              {rolled ? (
+                                <span className="rp-status rp-status-cancelled">
+                                  <span className="rp-status-dot" />
+                                  ROLLED_BACK
+                                </span>
+                              ) : status.toUpperCase() === "DONE" ? (
+                                <span className="rp-status rp-status-approved">
+                                  <span className="rp-status-dot" />
+                                  DONE
+                                </span>
+                              ) : (
+                                <span className="rp-status rp-status-pending">
+                                  <span className="rp-status-dot" />
+                                  {status}
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{n0(b.row_count)}</td>
+                            <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{n0(b.valid_count)}</td>
+                            <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{n0(b.error_count)}</td>
+                            <td>
+                              {isAdmin ? (
+                                <button
+                                  type="button"
+                                  className="rp-btn-red-outline"
+                                  disabled={rolled}
+                                  onClick={() => rollbackBatch(String(b.id))}
+                                  title={rolled ? "Already rolled back" : "Rollback this batch"}
+                                >
+                                  {rolled ? "Rolled back" : "Rollback"}
+                                </button>
+                              ) : (
+                                <button type="button" className="rp-btn-red-outline" disabled title="Admin only">
+                                  🔒 Locked
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-
-                <div className="rp-history-card__grid">
-                  <div className="rp-history-metric">
-                    <div className="rp-history-metric__k">Rows</div>
-                    <div className="rp-history-metric__v">
-                      {h.validRows}/{h.totalRows}
-                    </div>
-                  </div>
-
-                  <div className="rp-history-metric">
-                    <div className="rp-history-metric__k">Imported</div>
-                    <div className="rp-history-metric__v">{h.imported}</div>
-                  </div>
-
-                  <div className="rp-history-metric">
-                    <div className="rp-history-metric__k">Failed</div>
-                    <div className="rp-history-metric__v">{h.failed}</div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </>
-    )}
-  </div>
-</section>
+              )}
+            </div>
+          </section>
 
           {/* How it works */}
           <section className="rp-card rp-card-anim">
             <div className="rp-card-head rp-card-head--tight">
               <div>
                 <div className="rp-card-title">How it works</div>
-                <div className="rp-card-sub">Imports customers using <b>/api/customers/create</b></div>
+                <div className="rp-card-sub">
+                  Uses <b>/api/customers/bulk-import</b> (Dry Run + Import) • Creates a server batch
+                </div>
               </div>
               <span className="rp-chip">CSV + XLSX</span>
             </div>
@@ -967,15 +913,15 @@ export default function CustomerImportPage() {
             <div className="rp-card-body" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <span className="rp-status rp-status-issued">
                 <span className="rp-status-dot" />
-                Required columns: customer_code, name, address, phone, brn, vat_no, whatsapp
+                Required: customer_code, customer_name, client_name, address, phone_no, whatsapp_no, brn, vat_no
               </span>
               <span className="rp-status rp-status-approved">
                 <span className="rp-status-dot" />
-                Preview before import (first 50 rows)
+                Dry Run validates server-side before Import
               </span>
               <span className="rp-status rp-status-pending">
                 <span className="rp-status-dot" />
-                Guard: max {MAX_FILE_MB}MB & allowed extensions
+                Optional: Delete all existing customers before import
               </span>
             </div>
           </section>
@@ -993,17 +939,14 @@ export default function CustomerImportPage() {
             const input = e.currentTarget;
             const file = input.files?.[0];
             if (!file) return;
-
-            // ✅ reset immediately (so same file can be chosen again)
             input.value = "";
-
             await handleFile(file);
           }}
         />
 
-        {/* Modal (kept exactly with your fixed sizing / overflow rules) */}
+        {/* Modal */}
         {importOpen && (
-          <div className="rp-modal-backdrop" onClick={() => (importing ? null : setImportOpen(false))}>
+          <div className="rp-modal-backdrop" onClick={() => (isImporting ? null : setImportOpen(false))}>
             <div
               className="rp-modal"
               onClick={(e) => e.stopPropagation()}
@@ -1017,22 +960,12 @@ export default function CustomerImportPage() {
             >
               <div className="rp-modal-head">
                 <div className="rp-modal-title">Import Preview (CSV / XLSX)</div>
-                <button
-                  className="rp-modal-x"
-                  onClick={() => (importing ? null : setImportOpen(false))}
-                  aria-label="Close"
-                >
+                <button className="rp-modal-x" onClick={() => (isImporting ? null : setImportOpen(false))} aria-label="Close">
                   ✕
                 </button>
               </div>
 
-              <div
-                className="rp-modal-body"
-                style={{
-                  overflow: "auto",
-                  paddingBottom: 18,
-                }}
-              >
+              <div className="rp-modal-body" style={{ overflow: "auto", paddingBottom: 18 }}>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
                   <button className="rp-btn-red" type="button" onClick={() => fileRef.current?.click()}>
                     Choose File
@@ -1052,7 +985,31 @@ export default function CustomerImportPage() {
                   </div>
                 </div>
 
+                {/* ✅ Toggle clear existing */}
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+                  <label
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "10px 12px",
+                      borderRadius: 14,
+                      border: "1px solid rgba(0,0,0,.10)",
+                      background: "rgba(255,255,255,.7)",
+                      fontWeight: 950,
+                    }}
+                    title="If enabled, Import will delete all existing customers first."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={clearExisting}
+                      onChange={(e) => setClearExisting(e.target.checked)}
+                      disabled={!isAdmin || isImporting}
+                      style={{ width: 18, height: 18 }}
+                    />
+                    Delete all existing customers before import
+                  </label>
+
                   <input
                     className="rp-input-premium"
                     value={q}
@@ -1095,12 +1052,12 @@ export default function CustomerImportPage() {
                       </thead>
                       <tbody>
                         {filteredPreview.slice(0, 50).map((r) => (
-                          <tr key={`${r.rowNo}-${r.customer_code}-${r.phone}-${r.whatsapp}`}>
+                          <tr key={`${r.rowNo}-${r.customer_code}-${r.phone_no}-${r.whatsapp_no}`}>
                             <td>{r.rowNo}</td>
                             <td style={{ fontWeight: 950 }}>{r.customer_code || "—"}</td>
-                            <td style={{ fontWeight: 950 }}>{r.name || "—"}</td>
-                            <td>{r.phone || "—"}</td>
-                            <td>{r.whatsapp || "—"}</td>
+                            <td style={{ fontWeight: 950 }}>{r.customer_name || "—"}</td>
+                            <td>{r.phone_no || "—"}</td>
+                            <td>{r.whatsapp_no || "—"}</td>
                             <td>{r.brn || "—"}</td>
                             <td>{r.vat_no || "—"}</td>
                             <td>
@@ -1124,24 +1081,35 @@ export default function CustomerImportPage() {
                 )}
 
                 {rows.length > 50 && (
-                  <div style={{ marginTop: 8, fontWeight: 950, color: "rgba(0,0,0,.6)" }}>
-                    Preview limited to first 50 rows.
-                  </div>
+                  <div style={{ marginTop: 8, fontWeight: 950, color: "rgba(0,0,0,.6)" }}>Preview limited to first 50 rows.</div>
                 )}
               </div>
 
-              <div className="rp-modal-foot">
-                <button className="rp-btn-red-outline" type="button" onClick={() => setImportOpen(false)} disabled={importing}>
+              <div className="rp-modal-foot" style={{ display: "flex", gap: 10 }}>
+                <button className="rp-btn-red-outline" type="button" onClick={() => setImportOpen(false)} disabled={isImporting}>
                   Cancel
                 </button>
+
+                {/* ✅ DRY RUN */}
+                <button
+                  className="rp-btn-red-outline"
+                  type="button"
+                  onClick={() => callBulk("DRY_RUN")}
+                  disabled={isImporting || apiRows.length === 0}
+                  title="Validate on server without writing to DB"
+                >
+                  {isImporting ? "Working…" : "Dry Run"}
+                </button>
+
+                {/* ✅ IMPORT */}
                 <button
                   className="rp-btn-red"
                   type="button"
-                  onClick={runImport}
-                  disabled={importing || summary.ok === 0 || !isAdmin}
-                  title={!isAdmin ? "Admin only" : undefined}
+                  onClick={() => callBulk("IMPORT")}
+                  disabled={isImporting || summary.ok === 0 || !isAdmin}
+                  title={!isAdmin ? "Admin only" : "Import to database"}
                 >
-                  {importing ? "Importing…" : `Import ${summary.ok} Customer(s)`}
+                  {isImporting ? "Importing…" : `Import ${summary.ok} Customer(s)`}
                 </button>
               </div>
             </div>

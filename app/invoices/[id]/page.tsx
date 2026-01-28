@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { useParams, useRouter } from "next/navigation";
-import RamPotteryDoc from "@/components/RamPotteryDoc";
+import RamPotteryDoc from "@/components/print/RamPotteryDoc";
 import { rpFetch } from "@/lib/rpFetch";
 
 function n2(v: any) {
@@ -23,6 +23,18 @@ function formatDDMMYYYY(v: any) {
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m) return `${m[3]}/${m[2]}/${m[1]}`;
   return s;
+}
+
+async function setInvoicePaidNow(invoiceId: number | string, paidNow: number) {
+  const res = await rpFetch("/api/invoices/set-paid", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ invoiceId, amountPaid: paidNow }), // amountPaid = PAID NOW (incremental)
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to set paid");
+  return json;
 }
 
 async function waitForImages() {
@@ -46,7 +58,6 @@ export default function InvoiceDetailPage() {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
-
   const [printing, setPrinting] = useState(false);
 
   // do NOT read localStorage during render (hydration safe)
@@ -87,7 +98,7 @@ export default function InvoiceDetailPage() {
   }
 
   useEffect(() => {
-    loadInvoice();
+    void loadInvoice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params?.id]);
 
@@ -136,7 +147,6 @@ export default function InvoiceDetailPage() {
         ? n2(invoice?.balance_due)
         : Math.max(0, gross - paid);
 
-    // ✅ discount snapshot from invoice row
     const discountPercent = n2(invoice?.discount_percent);
     const discountAmount = n2(invoice?.discount_amount);
 
@@ -163,8 +173,9 @@ export default function InvoiceDetailPage() {
 
   const invoiceDateFormatted = formatDDMMYYYY(invoice.invoice_date);
 
-  const companyBrn = (process.env.NEXT_PUBLIC_COMPANY_BRN || "").trim() || null;
-  const companyVat = (process.env.NEXT_PUBLIC_COMPANY_VAT || "").trim() || null;
+  // IMPORTANT: RamPotteryDoc expects string-ish; keep fallback ""
+  const companyBrn = (process.env.NEXT_PUBLIC_COMPANY_BRN || "").trim() || "";
+  const companyVat = (process.env.NEXT_PUBLIC_COMPANY_VAT || "").trim() || "";
 
   const vatPercent = invoice?.vat_percent != null ? n2(invoice.vat_percent) : 15;
 
@@ -219,6 +230,29 @@ export default function InvoiceDetailPage() {
           <button className="rp-btn" onClick={() => router.push("/invoices")}>
             ← Back
           </button>
+
+          {isAdmin ? (
+            <button
+              type="button"
+              className="rp-btn rp-btn--primary"
+              onClick={async () => {
+                const input = prompt("Enter amount paid now (Rs):", "0");
+                const paidNow = Number(input || 0);
+                if (!Number.isFinite(paidNow) || paidNow <= 0) return;
+
+                try {
+                  await setInvoicePaidNow(invoice.id, paidNow);
+                  alert("Payment saved ✅");
+                  void loadInvoice(); // refresh view
+                } catch (e: any) {
+                  alert(e?.message || "Failed");
+                }
+              }}
+            >
+              Set Paid Now
+            </button>
+          ) : null}
+
           <button className="rp-btn rp-btn-primary" onClick={handlePrint}>
             🖨 Print / Reprint
           </button>
@@ -309,21 +343,19 @@ export default function InvoiceDetailPage() {
           <div className="rp-inv-paperwrap">
             <RamPotteryDoc
               variant="INVOICE"
-              tableHeaderRightTitle="VAT INVOICE"
               docNoLabel="INVOICE NO:"
               docNoValue={invoice.invoice_number}
               dateLabel="DATE:"
               dateValue={invoiceDateFormatted}
               purchaseOrderLabel="PURCHASE ORDER NO:"
               purchaseOrderValue={invoice.purchase_order_no || ""}
-
               salesRepName={salesRepName}
               salesRepPhone={salesRepPhone}
               customer={{
-                customer_code: customer?.customer_code,
-                name: customer?.name,
-                address: customer?.address,
-                phone: customer?.phone,
+                customer_code: customer?.customer_code ?? "",
+                name: customer?.name ?? "",
+                address: customer?.address ?? "",
+                phone: customer?.phone ?? "",
                 brn: "",
                 vat_no: "",
               }}
@@ -334,22 +366,20 @@ export default function InvoiceDetailPage() {
               items={items.map((r, idx) => {
                 const uom = (r.uom ?? "BOX") === "PCS" ? "PCS" : "BOX";
                 const box_qty = uom === "BOX" ? n2(r.box_qty) : 0;
-                const pcs_qty = uom === "PCS" ? n2(r.pcs_qty ?? r.box_qty) : 0;
 
                 const units_per_box = uom === "BOX" ? n2(r.units_per_box) : 1;
                 const total_qty = n2(r.total_qty);
 
                 const unit_price_excl_vat = n2(r.unit_price_excl_vat);
                 const unit_vat = n2(r.unit_vat);
-                const unit_price_incl_vat = n2((r.unit_price_incl_vat ?? unit_price_excl_vat + unit_vat) || 0);
-                const line_total = n2((r.line_total ?? unit_price_incl_vat * total_qty) || 0);
+                const unit_price_incl_vat = n2(r.unit_price_incl_vat ?? unit_price_excl_vat + unit_vat);
+                const line_total = n2(r.line_total ?? unit_price_incl_vat * total_qty);
 
                 return {
                   sn: idx + 1,
                   item_code: r.products?.item_code || "",
                   uom,
                   box_qty,
-                  pcs_qty,
                   units_per_box,
                   total_qty,
                   description: r.description || r.products?.name || "",
@@ -363,20 +393,15 @@ export default function InvoiceDetailPage() {
                 subtotal: computed.subtotal,
                 vatPercentLabel: `VAT ${vatPercent.toFixed(0)}%`,
                 vat_amount: computed.vatAmount,
-
-                // ✅ these are already AFTER discount (as stored)
                 total_amount: computed.total,
-
-                // ✅ snapshot discount lines (audit-proof)
                 discount_percent: computed.discountPercent,
                 discount_amount: computed.discountAmount,
-
                 previous_balance: computed.prev,
                 amount_paid: computed.paid,
                 balance_remaining: computed.due,
               }}
-              preparedBy={null}
-              deliveredBy={null}
+              preparedBy={undefined}
+              deliveredBy={undefined}
             />
           </div>
         </main>
@@ -442,6 +467,15 @@ export default function InvoiceDetailPage() {
         }
         .rp-btn-primary:hover {
           background: rgba(239, 68, 68, 0.28);
+        }
+
+        /* admin paid button */
+        .rp-btn--primary {
+          border-color: rgba(34, 197, 94, 0.55);
+          background: rgba(34, 197, 94, 0.16);
+        }
+        .rp-btn--primary:hover {
+          background: rgba(34, 197, 94, 0.24);
         }
 
         .rp-inv-body {

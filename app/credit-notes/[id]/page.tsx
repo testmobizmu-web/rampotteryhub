@@ -1,13 +1,7 @@
-import { Suspense } from "react";
-import CreditNotePrintClient from "./printClient";
+// app/credit-notes/[id]/page.tsx
+import CreditNoteDetailClient from "./CreditNoteDetailClient";
 
-export const dynamic = "force-dynamic";
-
-export default function CreditNotePrintPage() {
-  return (
-    <Suspense fallback={<div style={{ padding: 24 }}>Loading credit note…</div>}>
-      <CreditNotePrintClient />
-    </Suspense>
-  );
+export default function Page() {
+  return <CreditNoteDetailClient />;
 }
 
