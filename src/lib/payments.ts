@@ -1,126 +1,85 @@
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "@/integrations/supabase/client";
+import type { InvoicePayment, PaymentInsert } from "@/types/payment";
+import type { Invoice } from "@/types/invoice";
 
-function supaAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !(service || anon)) {
-    throw new Error(
-      "Missing Supabase env. Need NEXT_PUBLIC_SUPABASE_URL + (SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY)"
-    );
-  }
-  return createClient(url, service || anon!);
+function round2(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
-export function getUserFromHeader(xRpUser: string | null): any | null {
-  if (!xRpUser) return null;
-  try {
-    return JSON.parse(xRpUser);
-  } catch {
-    return null;
-  }
+export async function listPayments(invoiceId: number) {
+  const { data, error } = await supabase
+    .from("invoice_payments")
+    .select("id,invoice_id_bigint,payment_date,amount,method,reference,notes,created_at")
+    .eq("invoice_id_bigint", invoiceId)
+    .order("payment_date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as InvoicePayment[];
 }
 
-export function canRecordPayments(user: any) {
-  if (!user) return false;
-  if (String(user.role || "").toLowerCase() === "admin") return true;
-  // allow accounting / sales to record payments if you have permissions object
-  return Boolean(user?.permissions?.canEditInvoices || user?.permissions?.canEditPayments);
-}
-
-export function canDeletePayments(user: any) {
-  if (!user) return false;
-  return String(user.role || "").toLowerCase() === "admin";
-}
-
-function n2(v: any) {
-  const x = Number(v ?? 0);
-  return Number.isFinite(x) ? x : 0;
-}
-
-function statusFromPaid(totalDue: number, paid: number, currentStatus: string) {
-  const cur = String(currentStatus || "").toUpperCase().trim();
-  if (cur === "VOID") return "VOID";
-
-  const due = Math.max(0, totalDue);
-  const p = Math.max(0, paid);
-
-  if (p <= 0) return "ISSUED";
-  if (p + 0.00001 >= due) return "PAID";
-  return "PARTIALLY_PAID";
-}
-
-/**
- * Recalculate and persist invoice payment state:
- * - amount_paid
- * - balance_due
- * - balance_remaining
- * - gross_total
- * - status (ISSUED / PARTIALLY_PAID / PAID) unless VOID
- *
- * Uses:
- * - invoices.gross_total if present,
- * - else total_amount + previous_balance
- */
-export async function recalcInvoicePaymentState(invoiceId: number | string) {
-  const supabase = supaAdmin();
-
-  // 1) get invoice totals + current status
-  const { data: inv, error: invErr } = await supabase
-    .from("invoices")
-    .select("id,status,total_amount,previous_balance,gross_total")
-    .eq("id", invoiceId)
+export async function addPayment(row: PaymentInsert) {
+  const { data, error } = await supabase
+    .from("invoice_payments")
+    .insert({
+      invoice_id_bigint: row.invoice_id_bigint,
+      payment_date: row.payment_date,
+      amount: row.amount,
+      method: row.method,
+      reference: row.reference ?? null,
+      notes: row.notes ?? null,
+    })
+    .select("id,invoice_id_bigint,payment_date,amount,method,reference,notes,created_at")
     .single();
 
-  if (invErr) throw new Error(invErr.message);
+  if (error) throw error;
+  return data as InvoicePayment;
+}
 
-  const currentStatus = String(inv?.status || "").toUpperCase().trim();
+export async function deletePayment(id: string) {
+  const { error } = await supabase.from("invoice_payments").delete().eq("id", id);
+  if (error) throw error;
+  return true;
+}
 
-  const totalAmount = n2(inv?.total_amount);
-  const previousBalance = n2(inv?.previous_balance);
+export function computeInvoiceStatus(current: Invoice["status"], total: number, paid: number) {
+  if (current === "DRAFT") return "DRAFT" as const;
 
-  // Prefer stored gross_total, else compute
-  const grossTotal =
-    inv?.gross_total != null ? n2(inv.gross_total) : totalAmount + previousBalance;
+  const t = round2(Number(total || 0));
+  const p = round2(Number(paid || 0));
 
-  // 2) sum payments
-  const { data: pays, error: payErr } = await supabase
+  if (p <= 0) return "ISSUED" as const;
+  if (p > 0 && p + 0.009 < t) return "PARTIALLY_PAID" as const;
+  return "PAID" as const;
+}
+
+export async function syncInvoicePaid(invoice: Invoice) {
+  const { data, error } = await supabase
     .from("invoice_payments")
     .select("amount")
-    .eq("invoice_id", invoiceId);
+    .eq("invoice_id_bigint", invoice.id);
 
-  if (payErr) throw new Error(payErr.message);
+  if (error) throw error;
 
-  const paid = (pays || []).reduce((sum: number, p: any) => sum + n2(p.amount), 0);
+  const sumPaid = round2((data || []).reduce((s, r: any) => s + Number(r.amount || 0), 0));
+  const total = round2(Number(invoice.total_amount || 0));
+  const balance = round2(total - sumPaid);
 
-  const balance = Math.max(0, grossTotal - paid);
+  const status = computeInvoiceStatus(invoice.status, total, sumPaid);
 
-  // 3) compute next status
-  const nextStatus = statusFromPaid(grossTotal, paid, currentStatus);
-
-  // 4) update invoice
-  const { error: upErr } = await supabase
+  const { data: upd, error: err2 } = await supabase
     .from("invoices")
     .update({
-      amount_paid: paid,
-      balance_due: balance,
+      amount_paid: sumPaid,
       balance_remaining: balance,
-      gross_total: grossTotal,
-      status: nextStatus,
+      balance_due: balance,
+      status,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", invoiceId);
+    .eq("id", invoice.id)
+    .select("*")
+    .single();
 
-  if (upErr) throw new Error(upErr.message);
-
-  return {
-    invoiceId: Number(inv?.id),
-    paid: +paid.toFixed(2),
-    balance: +balance.toFixed(2),
-    status: nextStatus,
-    grossTotal: +grossTotal.toFixed(2),
-    totalAmount: +totalAmount.toFixed(2),
-    previousBalance: +previousBalance.toFixed(2),
-  };
+  if (err2) throw err2;
+  return upd as Invoice;
 }

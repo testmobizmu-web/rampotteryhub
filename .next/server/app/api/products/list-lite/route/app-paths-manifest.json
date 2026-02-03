@@ -1,0 +1,3 @@
+{
+  "/api/products/list-lite/route": "app/api/products/list-lite/route.js"
+}

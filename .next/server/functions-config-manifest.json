@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "functions": {
+    "/api/credit-notes/get/[id]": {},
+    "/api/credit-notes/pdf/[id]": {},
+    "/api/credit-notes/update": {},
+    "/api/invoices/[id]/pdf": {},
+    "/api/invoices/get/[id]": {},
+    "/api/products/import-prices": {},
+    "/api/reports/sales-by-product": {}
+  }
+}

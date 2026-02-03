@@ -1,0 +1,3 @@
+{
+  "/api/customers/import-batches/route": "app/api/customers/import-batches/route.js"
+}

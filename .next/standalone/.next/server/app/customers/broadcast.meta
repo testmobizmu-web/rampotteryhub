@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/customers/layout,_N_T_/customers/broadcast/layout,_N_T_/customers/broadcast/page,_N_T_/customers/broadcast"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/customers/broadcast/__PAGE__",
+    "/customers/broadcast",
+    "/customers",
+    "/_index",
+    "/_head"
+  ]
+}

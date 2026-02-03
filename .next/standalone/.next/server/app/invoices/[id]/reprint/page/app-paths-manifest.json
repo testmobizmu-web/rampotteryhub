@@ -1,0 +1,3 @@
+{
+  "/invoices/[id]/reprint/page": "app/invoices/[id]/reprint/page.js"
+}

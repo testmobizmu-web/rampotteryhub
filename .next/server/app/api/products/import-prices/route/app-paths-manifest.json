@@ -1,0 +1,3 @@
+{
+  "/api/products/import-prices/route": "app/api/products/import-prices/route.js"
+}
